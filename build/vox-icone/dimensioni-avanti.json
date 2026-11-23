@@ -1,0 +1,191 @@
+{
+	"resources/win32/code_150x150.png": {
+		"w": 150,
+		"h": 150,
+		"format": "png"
+	},
+	"resources/win32/code_70x70.png": {
+		"w": 70,
+		"h": 70,
+		"format": "png"
+	},
+	"resources/win32/logo_cube_noshadow.png": {
+		"w": 872,
+		"h": 970,
+		"format": "png"
+	},
+	"resources/linux/code.png": {
+		"w": 1200,
+		"h": 1200,
+		"format": "png"
+	},
+	"resources/server/code-192.png": {
+		"w": 1024,
+		"h": 1024,
+		"format": "png"
+	},
+	"resources/server/code-512.png": {
+		"w": 1024,
+		"h": 1024,
+		"format": "png"
+	},
+	"vox_icons/cubecircled.png": {
+		"w": 1200,
+		"h": 1200,
+		"format": "png"
+	},
+	"vox_icons/logo_cube_noshadow.png": {
+		"w": 872,
+		"h": 970,
+		"format": "png"
+	},
+	"vox_icons/slice_of_vox.png": {
+		"w": 1200,
+		"h": 1200,
+		"format": "png"
+	},
+	"src/vs/workbench/browser/media/vox-icon-sm.png": {
+		"w": 872,
+		"h": 970,
+		"format": "png"
+	},
+	"src/vs/workbench/browser/parts/editor/media/slice_of_vox.png": {
+		"w": 1200,
+		"h": 1200,
+		"format": "png"
+	},
+	"src/vs/workbench/browser/parts/editor/media/vox_cube_noshadow.png": {
+		"w": 872,
+		"h": 970,
+		"format": "png"
+	},
+	"resources/win32/code.ico": {
+		"sizes": [
+			16,
+			24,
+			32,
+			48,
+			64,
+			72,
+			96,
+			128,
+			256
+		],
+		"format": "ico"
+	},
+	"resources/server/favicon.ico": {
+		"sizes": [
+			256
+		],
+		"format": "ico"
+	},
+	"vox_icons/code.ico": {
+		"sizes": [
+			16,
+			24,
+			32,
+			48,
+			64,
+			72,
+			96,
+			128,
+			256
+		],
+		"format": "ico"
+	},
+	"resources/win32/inno-vox.bmp": {
+		"w": 1200,
+		"h": 1200,
+		"bpp": 8,
+		"format": "bmp"
+	},
+	"resources/win32/inno-big-100.bmp": {
+		"w": 164,
+		"h": 314,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-small-100.bmp": {
+		"w": 55,
+		"h": 55,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-big-125.bmp": {
+		"w": 192,
+		"h": 386,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-small-125.bmp": {
+		"w": 64,
+		"h": 68,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-big-150.bmp": {
+		"w": 246,
+		"h": 459,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-small-150.bmp": {
+		"w": 83,
+		"h": 80,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-big-175.bmp": {
+		"w": 273,
+		"h": 556,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-small-175.bmp": {
+		"w": 92,
+		"h": 97,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-big-200.bmp": {
+		"w": 328,
+		"h": 604,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-small-200.bmp": {
+		"w": 110,
+		"h": 106,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-big-225.bmp": {
+		"w": 355,
+		"h": 700,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-small-225.bmp": {
+		"w": 119,
+		"h": 123,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"resources/win32/inno-big-250.bmp": {
+		"w": 410,
+		"h": 797,
+		"bpp": 32,
+		"format": "bmp"
+	},
+	"resources/win32/inno-small-250.bmp": {
+		"w": 138,
+		"h": 140,
+		"bpp": 24,
+		"format": "bmp"
+	},
+	"scripts/appimage/vox.png": {
+		"w": 512,
+		"h": 512,
+		"format": "png"
+	}
+}

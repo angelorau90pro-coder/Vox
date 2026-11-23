@@ -1,0 +1,361 @@
+/*--------------------------------------------------------------------------------------
+ *  Copyright 2025 Glass Devtools, Inc. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
+ *--------------------------------------------------------------------------------------*/
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+& {
+	--vox-bg-1: var(--vscode-input-background);
+	--vox-bg-1-alt: var(--vscode-badge-background);
+	--vox-bg-2: var(--vscode-sideBar-background);
+	--vox-bg-2-alt: color-mix(in srgb, var(--vscode-editor-background) 30%, var(--vscode-sideBar-background) 70%);
+	--vox-bg-2-hover: color-mix(in srgb, var(--vscode-editor-foreground) 2%, var(--vscode-sideBar-background) 98%);
+	--vox-bg-3: var(--vscode-editor-background);
+
+	--vox-fg-0: color-mix(in srgb, var(--vscode-tab-activeForeground) 90%, black 10%);
+	--vox-fg-1: var(--vscode-editor-foreground);
+	--vox-fg-2: var(--vscode-input-foreground);
+	--vox-fg-3: var(--vscode-input-placeholderForeground);
+	/* --vox-fg-4: var(--vscode-tab-inactiveForeground); */
+	--vox-fg-4: var(--vscode-list-deemphasizedForeground);
+
+	--vox-warning: var(--vscode-charts-yellow);
+	/* fondo e bordo dei riquadri di avviso: il testo resta quello del tema, così si legge anche nei temi chiari */
+	--vox-warning-soft: color-mix(in srgb, var(--vox-warning) 12%, transparent);
+	--vox-warning-border: color-mix(in srgb, var(--vox-warning) 45%, transparent);
+
+	--vox-border-1: var(--vscode-commandCenter-activeBorder);
+	--vox-border-2: var(--vscode-commandCenter-border);
+	--vox-border-3: var(--vscode-commandCenter-inactiveBorder);
+	--vox-border-4: var(--vscode-editorGroup-border);
+
+	--vox-ring-color: var(--vscode-focusBorder, #2EC4B0);
+	--vox-link-color: var(--vscode-textLink-foreground, #2EC4B0);
+
+	/* Vox: sistema grafico. Tutto deriva dal tema attivo, così funziona con ogni tema chiaro, scuro o a contrasto elevato. */
+	/* accento: il colore dei pulsanti principali del tema (verde acqua nei temi Vox) */
+	--vox-accent: var(--vscode-button-background);
+	--vox-accent-fg: var(--vscode-button-foreground);
+	--vox-accent-hover: var(--vscode-button-hoverBackground);
+	--vox-accent-soft: color-mix(in srgb, var(--vscode-button-background) 14%, transparent);
+	--vox-accent-softer: color-mix(in srgb, var(--vscode-button-background) 8%, transparent);
+	--vox-accent-border: color-mix(in srgb, var(--vscode-button-background) 45%, transparent);
+	--vox-accent-text: var(--vscode-textLink-foreground);
+
+	/* superfici: schede e riquadri appoggiati sullo sfondo del pannello */
+	--vox-surface: color-mix(in srgb, var(--vscode-editor-foreground) 4%, var(--vscode-sideBar-background));
+	--vox-surface-hover: color-mix(in srgb, var(--vscode-editor-foreground) 7%, var(--vscode-sideBar-background));
+	--vox-surface-raised: var(--vscode-editorWidget-background);
+	--vox-hairline: color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent);
+	--vox-hairline-strong: color-mix(in srgb, var(--vscode-editor-foreground) 18%, transparent);
+
+	/* stati */
+	--vox-success: var(--vscode-testing-iconPassed, #3FB97A);
+	--vox-danger: var(--vscode-errorForeground, #F2707A);
+	--vox-danger-soft: color-mix(in srgb, var(--vox-danger) 14%, transparent);
+	--vox-danger-border: color-mix(in srgb, var(--vox-danger) 40%, transparent);
+	--vox-info: var(--vscode-charts-blue, #4C9AFF);
+
+	/* forme */
+	--vox-radius-sm: 6px;
+	--vox-radius-md: 8px;
+	--vox-radius-lg: 12px;
+	--vox-radius-xl: 16px;
+	--vox-shadow-sm: 0 1px 2px rgba(0, 0, 0, .12);
+	--vox-shadow-md: 0 4px 14px -4px rgba(0, 0, 0, .28), 0 1px 3px rgba(0, 0, 0, .12);
+	--vox-shadow-lg: 0 18px 40px -12px rgba(0, 0, 0, .45), 0 2px 6px rgba(0, 0, 0, .14);
+}
+
+/* Vox: componenti grafici condivisi (nel codice si usano col prefisso @@, che li lascia senza prefisso) */
+
+/* pulsanti */
+.vox-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	padding: 5px 12px;
+	border-radius: var(--vox-radius-md);
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 18px;
+	white-space: nowrap;
+	cursor: pointer;
+	border: 1px solid transparent;
+	transition: background-color .15s ease, border-color .15s ease, color .15s ease, opacity .15s ease, transform .1s ease;
+	user-select: none;
+}
+.vox-btn:active:not(:disabled) {
+	transform: translateY(.5px);
+}
+.vox-btn:disabled {
+	opacity: .45;
+	cursor: not-allowed;
+}
+.vox-btn-primary {
+	background-color: var(--vox-accent);
+	color: var(--vox-accent-fg);
+}
+.vox-btn-primary:hover:not(:disabled) {
+	background-color: var(--vox-accent-hover);
+}
+.vox-btn-secondary {
+	background-color: var(--vox-surface);
+	color: var(--vox-fg-1);
+	border-color: var(--vox-hairline);
+}
+.vox-btn-secondary:hover:not(:disabled) {
+	background-color: var(--vox-surface-hover);
+	border-color: var(--vox-hairline-strong);
+}
+.vox-btn-ghost {
+	background-color: transparent;
+	color: var(--vox-fg-3);
+}
+.vox-btn-ghost:hover:not(:disabled) {
+	background-color: var(--vox-surface-hover);
+	color: var(--vox-fg-1);
+}
+.vox-btn-danger {
+	background-color: color-mix(in srgb, var(--vox-danger) 14%, transparent);
+	color: var(--vox-danger);
+	border-color: color-mix(in srgb, var(--vox-danger) 35%, transparent);
+}
+.vox-btn-danger:hover:not(:disabled) {
+	background-color: color-mix(in srgb, var(--vox-danger) 22%, transparent);
+}
+.vox-btn-sm {
+	padding: 3px 10px;
+	font-size: 11.5px;
+	line-height: 16px;
+	border-radius: var(--vox-radius-sm);
+}
+.vox-btn-lg {
+	padding: 9px 18px;
+	font-size: 13px;
+	border-radius: var(--vox-radius-lg);
+}
+
+/* schede e riquadri */
+.vox-card {
+	background-color: var(--vox-surface);
+	border: 1px solid var(--vox-hairline);
+	border-radius: var(--vox-radius-lg);
+}
+.vox-card-interactive {
+	transition: background-color .15s ease, border-color .15s ease;
+	cursor: pointer;
+}
+.vox-card-interactive:hover {
+	background-color: var(--vox-surface-hover);
+	border-color: var(--vox-hairline-strong);
+}
+
+/* pastiglie (selezioni, etichette, modelli) */
+.vox-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 1px 7px;
+	border-radius: 999px;
+	font-size: 11px;
+	line-height: 18px;
+	background-color: var(--vox-surface-hover);
+	border: 1px solid var(--vox-hairline);
+	color: var(--vox-fg-2);
+	white-space: nowrap;
+}
+
+/* etichetta di sezione (maiuscoletto discreto) */
+.vox-eyebrow {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+	color: var(--vox-fg-3);
+}
+
+/* tasto di scorciatoia */
+.vox-kbd {
+	display: inline-flex;
+	align-items: center;
+	padding: 0 5px;
+	min-width: 18px;
+	height: 18px;
+	justify-content: center;
+	border-radius: 5px;
+	font-size: 10.5px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	background-color: var(--vscode-keybindingLabel-background, var(--vox-surface-hover));
+	color: var(--vscode-keybindingLabel-foreground, var(--vox-fg-2));
+	border: 1px solid var(--vscode-keybindingLabel-border, var(--vox-hairline));
+	border-bottom-width: 2px;
+}
+
+/* menu a comparsa */
+.vox-popover {
+	background-color: var(--vox-surface-raised);
+	border: 1px solid var(--vox-hairline-strong);
+	border-radius: var(--vox-radius-md);
+	box-shadow: var(--vox-shadow-lg);
+	padding: 4px;
+}
+.vox-menu-item {
+	border-radius: var(--vox-radius-sm);
+}
+
+/* comparsa morbida */
+@keyframes vox-fade-up {
+	from { opacity: 0; transform: translateY(4px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+.vox-fade-up {
+	animation: vox-fade-up .22s ease-out both;
+}
+@keyframes vox-pulse-dot {
+	0%, 100% { opacity: .35; transform: scale(.85); }
+	50% { opacity: 1; transform: scale(1); }
+}
+.vox-typing > span {
+	display: inline-block;
+	width: 5px;
+	height: 5px;
+	margin-right: 3px;
+	border-radius: 999px;
+	background-color: var(--vox-fg-3);
+	animation: vox-pulse-dot 1.1s ease-in-out infinite;
+}
+.vox-typing > span:nth-child(2) { animation-delay: .15s; }
+.vox-typing > span:nth-child(3) { animation-delay: .3s; }
+
+@media (prefers-reduced-motion: reduce) {
+	.vox-fade-up, .vox-typing > span { animation: none; }
+	.vox-btn, .vox-card-interactive { transition: none; }
+}
+
+@media (forced-colors: active) {
+	.vox-btn, .vox-card, .vox-chip, .vox-popover, .vox-kbd {
+		border: 1px solid ButtonText;
+	}
+	.vox-btn-primary {
+		forced-color-adjust: none;
+		background-color: Highlight;
+		color: HighlightText;
+	}
+}
+
+.select-child-restyle select {
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	padding-right: 24px;
+}
+
+.vox-force-child-placeholder-vox-fg-1 ::placeholder {
+	color: var(--vox-fg-3);
+}
+
+* {
+	outline: none !important;
+}
+
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:not([tabindex="-1"]):focus-visible {
+	box-shadow: 0 0 0 2px var(--vscode-focusBorder, var(--vox-ring-color));
+	outline: 2px solid var(--vscode-focusBorder, var(--vox-ring-color)) !important;
+	outline-offset: 1px;
+}
+
+@media (forced-colors: active) {
+	button:focus-visible,
+	a:focus-visible,
+	select:focus-visible,
+	input:focus-visible,
+	textarea:focus-visible,
+	summary:focus-visible,
+	[tabindex]:not([tabindex="-1"]):focus-visible {
+		outline-color: Highlight !important;
+	}
+
+	/* opzione attiva dei menu: il focus resta sul pulsante, quindi serve un bordo visibile */
+	[role="option"][data-active] {
+		outline: 2px solid Highlight !important;
+		outline-offset: -2px;
+	}
+
+	/* interruttori: sfondi e ombre spariscono, quindi bordo e colori di sistema per binario e cursore */
+	[role="switch"] {
+		forced-color-adjust: none;
+		border: 1px solid ButtonText !important;
+		background-color: Canvas !important;
+	}
+	[role="switch"][aria-checked="true"] {
+		background-color: Highlight !important;
+	}
+	[role="switch"] > span {
+		background-color: ButtonText !important;
+	}
+	[role="switch"][aria-checked="true"] > span {
+		background-color: HighlightText !important;
+	}
+}
+
+
+
+.inherit-bg-all-restyle > * {
+	background-color: inherit !important;
+}
+
+
+.bg-editor-style-override {
+	--vscode-sideBar-background: var(--vscode-editor-background);
+}
+
+
+
+/* html {
+	font-size: var(--vscode-font-size);
+}
+
+.btn {
+	@apply cursor-pointer transition-colors;
+
+	&.btn-primary {
+		@apply bg-vscode-button-bg text-vscode-button-fg;
+
+		&:not(:disabled) {
+			@apply hover:bg-vscode-button-hoverBg;
+		}
+	}
+
+	&.btn-sm {
+		@apply px-3 py-1 text-sm;
+	}
+
+	&.btn-secondary {
+		@apply bg-vscode-button-secondary-bg text-vscode-button-secondary-fg;
+
+		&:not(:disabled) {
+			@apply hover:bg-vscode-button-secondary-hoverBg;
+		}
+	}
+
+	&:disabled {
+		@apply opacity-75 cursor-not-allowed;
+	}
+}
+
+.input {
+	@apply bg-vscode-input-bg text-vscode-input-fg border-vscode-input-border focus:outline-vscode-focus-border;
+}
+
+.dropdown {
+	@apply bg-vscode-dropdown-bg text-vscode-dropdown-foreground border-vscode-dropdown-border focus:outline-vscode-focus-border;
+} */

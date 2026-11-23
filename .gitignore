@@ -1,0 +1,37 @@
+.DS_Store
+.cache
+npm-debug.log
+Thumbs.db
+node_modules/
+.build/
+.vscode/extensions/**/out/
+extensions/**/dist/
+/out*/
+/extensions/**/out/
+build/node_modules
+coverage/
+test_data/
+test-results/
+test-results.xml
+vscode.db
+/.profile-oss
+/cli/target
+/cli/openssl
+product.overrides.json
+*.snap.actual
+.vscode-test
+
+# Vox added these:
+.tmp/
+.tmp2/
+.tool-versions
+src/vs/workbench/contrib/vox/browser/react/out/**
+src/vs/workbench/contrib/vox/browser/react/src2/**
+
+# IA locali di Vox: motore e modelli scaricati, mai versionati
+/ia-locali/
+
+# Cartelle di lavoro degli assistenti di sviluppo: mai versionate (gitleaks non le esamina)
+/.regia/
+/.regia-run/
+/_lavoro/

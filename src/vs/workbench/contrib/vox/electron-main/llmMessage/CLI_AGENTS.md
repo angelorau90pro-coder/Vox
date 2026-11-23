@@ -1,0 +1,41 @@
+# IA in CLI
+
+Il provider `cliAgent` usa CLI già installate e autenticate dall'utente. Non installa software e non richiede chiavi API nelle impostazioni di Vox. Nella sezione **IA in CLI** delle Impostazioni (in inglese **CLI AI**), i sette campi **Percorso comando** sono opzionali: se vuoti, viene cercato il comando nel `PATH`. Il percorso deve indicare un singolo eseguibile o uno shim npm/pnpm/yarn `.cmd`, senza argomenti aggiunti.
+
+Premere **Rileva CLI installate** dopo aver installato una CLI o cambiato un percorso. La ricerca usa `where.exe` su Windows e `which` sugli altri sistemi, senza avviare le IA. Soltanto le CLI trovate vengono aggiunte ai modelli; i modelli di CLI non più disponibili vengono nascosti. Il rilevamento conferma l'esistenza del comando, non login, abbonamento o disponibilità dei singoli modelli.
+
+Nel selettore della chat scegliere prima la IA (`codex`, `agy`, `devin`, `copilot`, `opencode`, `kimi` o `claude`), poi il modello nel sottomenu. Le IA compaiono soltanto se rilevate o aggiunte manualmente nelle impostazioni. I suggerimenti del sottomenu non configurano altre IA. **Personalizzato...** permette di scrivere il nome; Invio oppure OK applica, Esc annulla. **Predefinito** usa il modello della CLI senza passare `--model` (anche per Devin). Vox ricorda separatamente l'ultimo modello scelto per ogni IA, anche dopo il riavvio; tornare a Predefinito cancella il suffisso ricordato. I modelli nascosti nelle impostazioni non sono proposti come configurati. Il formato salvato resta `<ia>` oppure `<ia>:<modello>`, per esempio `codex:gpt-6.1-sol`. Se il modello scelto in precedenza apparteneva a un provider rimosso, Vox seleziona prima un modello locale disponibile, altrimenti una CLI installata, e mostra un avviso. Se non è disponibile nessuno dei due, la funzione resta senza modello finché non se ne sceglie uno. Negli altri casi, per esempio se il modello locale scelto non c'è più, Vox non seleziona da solo una IA in CLI. Le IA in CLI non si possono scegliere per il completamento automatico.
+
+## Esecuzione e permessi
+
+Il processo principale concatena sistema, cronologia e richiesta corrente, conservando i ruoli. Non abilita strumenti Vox, FIM o reasoning. I messaggi con i risultati degli strumenti di conversazioni precedenti restano testo di contesto.
+
+Chat normale e raccolta contesto usano permessi di sola lettura. La modalità agente seleziona la variante con modifica dei file nella prima cartella locale del workspace, e solo dopo il consenso dato nella finestra di conferma (vale per chat, IA e cartella). Kimi resta sempre in sola lettura, perché il suo profilo non ha un limite verificato alla cartella. Devin 3000.11.234 è stato provato l'11/11/2026: con `accept-edits` scrive nella cartella e rifiuta i percorsi assoluti esterni, quelli con `..` e quelli che passano da una giunzione. Senza workspace locale viene usata la home, sempre in sola lettura. Nei workspace con più cartelle, solo la prima cartella locale è la directory operativa.
+
+Le restrizioni usano i meccanismi di ogni CLI: sandbox Codex (su Windows `windows.sandbox=unelevated`), modalità plan/accept-edits per agy, profilo Devin con esecuzione comandi negata, elenco strumenti Copilot, permessi OpenCode, profilo Kimi e strumenti limitati Claude. I profili Devin/Kimi sono temporanei e vengono rimossi alla conclusione. Non vengono passati flag di approvazione indiscriminata. La policy nel prompt ricorda anche il divieto di aprire segreti e credenziali.
+
+Le CLI mantengono le proprie configurazioni di account e devono supportare i flag indicati in `CLI_AGENTS`. Il confinamento effettivo dipende dalle loro versioni e dai loro strumenti: il provider non aggiunge una sandbox del sistema operativo alle CLI che non ne hanno una. Verificare le restrizioni con la versione installata prima di usare progetti sensibili. Quando la CLI esce con un errore, Vox mostra al massimo una riga di stderr che ne spiega la causa (quota, login, modello non valido), tagliata a 240 caratteri e con chiavi, token e password oscurati (`describeCliFailure` in `cliAgents.ts`); se non trova una riga utile mostra un errore generico. Il resto di stderr non viene registrato né mostrato.
+
+`spawn` usa sempre `shell: false`: il prompt viene passato come argomento, senza interpolazione di shell. Oltre 12.000 caratteri Codex e Claude usano stdin (Copilot richiede il prompt in `-p`, quindi oltre il limite viene rifiutato), OpenCode un allegato temporaneo rimosso al termine. Per le altre CLI si rifiutano comandi oltre circa 30.000 caratteri, contando il quoting Windows. Su Windows gli shim npm vengono risolti al relativo entry point JavaScript e avviati con Node (`ELECTRON_RUN_AS_NODE` nel processo figlio); i batch generici vengono rifiutati. I percorsi relativi personalizzati non sono supportati: usare un percorso assoluto o un nome nel `PATH`.
+
+Il campo **Timeout (secondi)** vale 600 per impostazione predefinita. Timeout e annullamento terminano l'albero con `taskkill /T /F` su Windows, oppure il gruppo di processi sugli altri sistemi. Se Windows nega `taskkill`, viene tentata la terminazione del processo principale; durante un timeout viene segnalato che l'albero non è stato terminato. Un annullamento esplicito segue il comportamento dell'interfaccia di chat, che sopprime i successivi messaggi della richiesta. In caso di restrizioni del sistema possono restare processi discendenti da chiudere manualmente.
+
+Devin, Copilot e Claude inviano progressivamente il testo stdout, ripulendo le sequenze ANSI anche quando sono spezzate fra chunk; Codex, OpenCode, Kimi e agy restituiscono soltanto l'ultimo risultato estratto dagli eventi JSON, senza tool o ragionamento. Il comportamento stdout delle CLI reali resta da verificare nell'app, in particolare per eventuali messaggi intermedi di Devin e Copilot. Una risposta vuota o oltre 16 MiB viene rifiutata.
+
+## Aggiungere una IA
+
+1. Aggiungere a `CLI_AGENTS` il comando, `buildArgs(prompt, { model, cwd, write, profile })` e `parseOutput(stdout)`. Usare la modalità non interattiva, negare strumenti pericolosi e distinguere lettura da scrittura. Il prompt deve restare un argomento di `spawn` o andare su stdin; non introdurre shell.
+2. Se occorrono profili o variabili di ambiente per restringere gli strumenti, prepararli in `runCliAgent`, con pulizia nel `finally`. Nessuna dipendenza da strumenti esterni o da percorsi della macchina di sviluppo.
+3. Aggiungere `<ia>Command` in `defaultProviderSettings.cliAgent` e in `defaultCustomSettings` di `voxSettingsTypes.ts`. Il campo viene visualizzato automaticamente come percorso opzionale. Discovery e validazione del nome usano le chiavi di `CLI_AGENTS`.
+4. Per output strutturato aggiungere il parser alla copertura dei test ed escludere quella CLI dallo streaming stdout grezzo. Per tool intermedi conservare soltanto la risposta finale.
+5. Verificare con CLI finta: argomenti letterali con caratteri di shell, Unicode, streaming, errore, timeout, abort e permessi. Poi verificare con la CLI reale login e confinamento nel workspace.
+
+## Verifiche senza dipendenze del worktree
+
+Con Node >= 22.18, dalla root del progetto:
+
+```powershell
+node --test (Get-ChildItem src/vs/workbench/contrib/vox/electron-main/llmMessage/*.test.mjs).FullName
+```
+
+La CLI finta non usa account o rete. Il test dell'albero Windows viene indicato come saltato se una prova su un processo appena creato conferma che `taskkill` è negato; timeout e abort del processo principale vengono comunque verificati. La compilazione completa e la prova visiva nell'app richiedono l'ambiente di build del progetto e non sono coperte da questo script.

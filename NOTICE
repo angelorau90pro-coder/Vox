@@ -1,0 +1,14 @@
+Vox
+Copyright 2026 angelorau90pro-coder
+
+Vox contiene codice Copyright 2025 Glass Devtools, Inc., distribuito con licenza Apache 2.0 (LICENSE.txt), e codice di Visual Studio Code, Copyright Microsoft Corporation, distribuito con licenza MIT (LICENSE-VS-Code.txt).
+
+Modifiche di Vox: nome e identità del prodotto, identificatori di applicazione e installazione, nomi di codice, file, stili, comandi e chiavi di salvataggio; rimozione delle statistiche d'uso e dei collegamenti a servizi esterni; agenti da riga di comando, IA locali, localizzazione in italiano e documentazione in italiano.
+
+Gli avvisi di copyright originali restano nelle intestazioni dei file. Nei file di Visual Studio Code, i commenti "Vox" che segnano codice aggiunto o cambiato ("Vox added this", "Vox changed this" e simili) indicano modifiche rispetto a VS Code fatte in origine da Glass Devtools, Inc. e poi da Vox. Gli avvisi delle dipendenze sono in ThirdPartyNotices.txt.
+
+---
+extensions/vscode-language-pack-it: Italian Language Pack for Visual Studio Code (MS-CEINTL), Copyright (c) Microsoft Corporation, licenza MIT (extensions/vscode-language-pack-it/LICENSE.md), https://github.com/microsoft/vscode-loc
+extensions/open-remote-ssh: derivata da Open Remote - SSH, licenza MIT (extensions/open-remote-ssh/LICENSE.txt), https://github.com/jeanp413/open-remote-ssh
+extensions/open-remote-wsl: derivata da Open Remote - WSL, licenza MIT (extensions/open-remote-wsl/LICENSE.txt), https://github.com/jeanp413/open-remote-wsl
+src/vs/workbench/contrib/vox/electron-main/localModelLibrary/localModelTemplates.ts: modello di conversazione (chat_template.jinja) dei modelli Qwen3.6 del team Qwen, licenza Apache 2.0 (LICENSE.txt), https://huggingface.co/Qwen/Qwen3.6-35B-A3B; modificato da Vox: i messaggi di sistema a metà conversazione diventano blocchi system

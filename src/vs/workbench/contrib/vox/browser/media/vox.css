@@ -1,0 +1,210 @@
+/*--------------------------------------------------------------------------------------
+ *  Copyright 2025 Glass Devtools, Inc. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
+ *--------------------------------------------------------------------------------------*/
+
+.monaco-editor .vox-sweepIdxBG {
+	background-color: var(--vscode-vox-sweepIdxBG);
+}
+
+.vox-sweepBG {
+	background-color: var(--vscode-vox-sweepBG);
+}
+
+.vox-highlightBG {
+	background-color: var(--vscode-vox-highlightBG);
+}
+
+.vox-greenBG {
+	background-color: var(--vscode-vox-greenBG);
+}
+
+.vox-redBG {
+	background-color: var(--vscode-vox-redBG);
+}
+
+
+/* Formerly the watermark button class; now vox-openfolder-button */
+.vox-openfolder-button {
+    padding: 8px 20px;
+    background-color: var(--vscode-button-background, #2EC4B0);
+    color: var(--vscode-button-foreground, #04211D);
+    font-weight: 500;
+    border: none;
+    border-radius: 8px;
+    outline: none !important;
+	box-shadow: none !important;
+	cursor: pointer;
+	transition: background-color 0.2s ease;
+}
+.vox-openfolder-button:hover {
+    background-color: var(--vscode-button-hoverBackground, #45D4C1);
+}
+.vox-openfolder-button:active {
+    background-color: var(--vscode-button-hoverBackground, #45D4C1);
+}
+
+/* Added for Open SSH button with slightly darker color */
+.vox-openssh-button {
+    padding: 8px 20px;
+    background-color: var(--vscode-button-secondaryBackground, #2A2F38);
+    color: var(--vscode-button-secondaryForeground, #D5D9E0);
+    font-weight: 500;
+    border: 1px solid color-mix(in srgb, var(--vscode-editor-foreground) 12%, transparent);
+    border-radius: 8px;
+    outline: none !important;
+	box-shadow: none !important;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+.vox-openssh-button:hover {
+    background-color: var(--vscode-button-secondaryHoverBackground, #343A45);
+}
+.vox-openssh-button:active {
+    background-color: var(--vscode-button-secondaryHoverBackground, #343A45);
+}
+
+
+.vox-settings-watermark-button {
+	margin: 8px 0;
+	padding: 8px 20px;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid color-mix(in srgb, var(--vscode-editor-foreground) 12%, transparent);
+	border-radius: 8px;
+	outline: none !important;
+	box-shadow: none !important;
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+.vox-settings-watermark-button:hover {
+	filter: brightness(1.1);
+}
+
+.vox-settings-watermark-button:active {
+	filter: brightness(1.1);
+}
+
+.vox-link {
+	color: var(--vscode-textLink-foreground, #4FD1BF);
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+.vox-link:hover {
+	opacity: 80%;
+}
+
+/* styles for all containers used by vox */
+.vox-scope {
+	--scrollbar-vertical-width: 8px;
+	--scrollbar-horizontal-height: 6px;
+}
+
+/* Target both vox-scope and all its descendants with scrollbars */
+.vox-scope,
+.vox-scope * {
+	scrollbar-width: thin !important;
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent !important;
+	/* For Firefox */
+}
+
+.vox-scope::-webkit-scrollbar,
+.vox-scope *::-webkit-scrollbar {
+	width: var(--scrollbar-vertical-width) !important;
+	height: var(--scrollbar-horizontal-height) !important;
+	background-color: transparent !important;
+}
+
+.vox-scope::-webkit-scrollbar-thumb,
+.vox-scope *::-webkit-scrollbar-thumb {
+	background-color: var(--vscode-scrollbarSlider-background) !important;
+	border-radius: 999px !important;
+	border: none !important;
+	-webkit-box-shadow: none !important;
+	box-shadow: none !important;
+}
+
+.vox-scope::-webkit-scrollbar-thumb:hover,
+.vox-scope *::-webkit-scrollbar-thumb:hover {
+	background-color: var(--vscode-scrollbarSlider-hoverBackground) !important;
+}
+
+.vox-scope::-webkit-scrollbar-thumb:active,
+.vox-scope *::-webkit-scrollbar-thumb:active {
+	background-color: var(--vscode-scrollbarSlider-activeBackground) !important;
+}
+
+.vox-scope::-webkit-scrollbar-track,
+.vox-scope *::-webkit-scrollbar-track {
+	background-color: transparent !important;
+	border: none !important;
+}
+
+.vox-scope::-webkit-scrollbar-corner,
+.vox-scope *::-webkit-scrollbar-corner {
+	background-color: transparent !important;
+}
+
+/* Add vox-scrollable-element styles to match */
+.vox-scrollable-element {
+	background-color: var(--vscode-editor-background);
+	--scrollbar-vertical-width: 14px;
+	--scrollbar-horizontal-height: 6px;
+	overflow: auto;
+	/* Ensure scrollbars are shown when needed */
+}
+
+.vox-scrollable-element,
+.vox-scrollable-element * {
+	scrollbar-width: thin !important;
+	/* For Firefox */
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent !important;
+	/* For Firefox */
+}
+
+.vox-scrollable-element::-webkit-scrollbar,
+.vox-scrollable-element *::-webkit-scrollbar {
+	width: var(--scrollbar-vertical-width) !important;
+	height: var(--scrollbar-horizontal-height) !important;
+	background-color: transparent !important;
+}
+
+.vox-scrollable-element::-webkit-scrollbar-thumb,
+.vox-scrollable-element *::-webkit-scrollbar-thumb {
+	background-color: var(--vscode-scrollbarSlider-background) !important;
+	border-radius: 999px !important;
+	border: none !important;
+	-webkit-box-shadow: none !important;
+	box-shadow: none !important;
+}
+
+.vox-scrollable-element::-webkit-scrollbar-thumb:hover,
+.vox-scrollable-element *::-webkit-scrollbar-thumb:hover {
+	background-color: var(--vscode-scrollbarSlider-hoverBackground) !important;
+}
+
+.vox-scrollable-element::-webkit-scrollbar-thumb:active,
+.vox-scrollable-element *::-webkit-scrollbar-thumb:active {
+	background-color: var(--vscode-scrollbarSlider-activeBackground) !important;
+}
+
+.vox-scrollable-element::-webkit-scrollbar-track,
+.vox-scrollable-element *::-webkit-scrollbar-track {
+	background-color: transparent !important;
+	border: none !important;
+}
+
+.vox-scrollable-element::-webkit-scrollbar-corner,
+.vox-scrollable-element *::-webkit-scrollbar-corner {
+	background-color: transparent !important;
+}
+
+/* Vox: i pulsanti della finestra vuota tolgono il bordo del focus del browser; da tastiera serve comunque vederlo */
+.vox-openfolder-button:focus-visible,
+.vox-openssh-button:focus-visible,
+.vox-settings-watermark-button:focus-visible {
+	outline: 2px solid var(--vscode-focusBorder) !important;
+	outline-offset: 2px;
+}

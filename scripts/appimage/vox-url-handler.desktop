@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Vox - URL Handler
+Comment=Open source AI code editor.
+GenericName=Text Editor
+Exec=vox --open-url %U
+Icon=vox
+Type=Application
+NoDisplay=true
+StartupNotify=true
+Categories=Utility;TextEditor;Development;IDE;
+MimeType=x-scheme-handler/vox;
+Keywords=vox;

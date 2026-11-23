@@ -1,0 +1,15 @@
+Questo è il repository di Vox, un editor basato su Visual Studio Code 1.99.3.
+
+Quasi tutto il codice di Vox sta in src/vs/workbench/contrib/vox. La guida al codice è VOX_CODEBASE_GUIDE.md; prerequisiti, compilazione e test sono in HOW_TO_CONTRIBUTE.md.
+
+Prima di scrivere codice nuovo cerca nel repository i servizi e le funzioni che esistono già.
+
+In TypeScript non fare cast se non servono e non usare mai `any` per comodità: trova il tipo giusto.
+
+Segui lo stile del file che modifichi (per esempio punto e virgola sì o no) e cambia il meno possibile.
+
+Prima di modificare file fuori da src/vs/workbench/contrib/vox chiedi all'utente.
+
+Un valore che va da A a B si chiama bOfA: per esempio una mappa dall'id di uno strumento al suo nome si chiama toolNameOfToolId.
+
+Dopo una modifica fai le verifiche descritte in HOW_TO_CONTRIBUTE.md: i test di Vox e il controllo dei tipi con tsc. Se non puoi eseguirle, di' all'utente quali comandi lanciare.
