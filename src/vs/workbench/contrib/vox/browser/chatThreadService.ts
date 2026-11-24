@@ -629,6 +629,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const errorMessage = this.toolErrMsgs.rejected
 		this._updateLatestTool(threadId, { role: 'tool', type: 'rejected', params: params, name: name, content: errorMessage, result: null, id, rawParams, mcpServerName })
 		this._setStreamState(threadId, undefined)
+		// VOX: l'esecuzione finisce qui: come alla fine di ogni esecuzione, un checkpoint prima del prossimo messaggio
+		// dell'utente (senza, «Torna al checkpoint» su quel messaggio ripristinava un punto precedente)
+		this._addUserCheckpoint({ threadId })
 	}
 
 	private _computeMCPServerOfToolName = (toolName: string) => {
@@ -638,6 +641,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	async abortRunning(threadId: string) {
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return // should never happen
+		// VOX: niente in corso, niente da fermare (prima si aggiungeva comunque un checkpoint in fondo alla chat)
+		if (!this.streamState[threadId]?.isRunning) return
 
 		// add assistant message
 		if (this.streamState[threadId]?.isRunning === 'LLM') {
@@ -653,7 +658,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		}
 		// reject the tool for the user if relevant
 		else if (this.streamState[threadId]?.isRunning === 'awaiting_user') {
-			this.rejectLatestToolRequest(threadId)
+			this.rejectLatestToolRequest(threadId) // aggiunge anche il checkpoint
+			return
 		}
 		else if (this.streamState[threadId]?.isRunning === 'idle') {
 			// do nothing
@@ -907,11 +913,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		// before enter loop, call tool
 		if (callThisToolFirst) {
 			const { interrupted } = await this._runToolCall(threadId, callThisToolFirst.name, callThisToolFirst.id, callThisToolFirst.mcpServerName, { preapproved: true, unvalidatedToolParams: callThisToolFirst.rawParams, validatedParams: callThisToolFirst.params })
-			if (interrupted) {
-				this._setStreamState(threadId, undefined)
-				this._addUserCheckpoint({ threadId })
-
-			}
+			// VOX: interrotto con «Ferma»: abortRunning ha già segnato lo strumento come rifiutato, aggiunto il checkpoint e
+			// azzerato lo stato (che ora può essere di una nuova esecuzione). Prima qui si continuava e si chiedeva un'altra
+			// risposta al modello, come se l'utente non avesse fermato nulla
+			if (interrupted) return
 		}
 		// IA in CLI in modalità Agente: possono scrivere solo se l'utente lo consente (una domanda per chat).
 		// Si chiede dopo l'eventuale strumento già approvato e subito prima del primo invio; durante la domanda
@@ -944,10 +949,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				threadId,
 			})
 
-			if (interruptedWhenIdle) {
-				this._setStreamState(threadId, undefined)
-				return
-			}
+			// interrotta (abortRunning ha già azzerato lo stato) o superata: non si tocca lo stato
+			if (!isStillValid()) return
 
 			let shouldRetryLLM = true
 			let nAttempts = 0
@@ -961,6 +964,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					| { type: 'llmAborted' }
 
 				let resMessageIsDonePromise: (res: ResTypes) => void // resolves when user approves this tool use (or if tool doesn't require approval)
+				let errorBeforeStart: { message: string; fullError: Error | null } | undefined // errore dato subito da sendLLMMessage (per esempio nessun modello scelto)
 				const messageIsDonePromise = new Promise<ResTypes>((res, rej) => { resMessageIsDonePromise = res })
 
 				const llmCancelToken = this._llmMessageService.sendLLMMessage({
@@ -980,6 +984,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 						resMessageIsDonePromise({ type: 'llmDone', toolCall, info: { fullText, fullReasoning, tokenStats } }) // resolve with tool calls
 					},
 					onError: async (error) => {
+						errorBeforeStart = error
 						resMessageIsDonePromise({ type: 'llmError', error: error })
 					},
 					onAbort: () => {
@@ -990,8 +995,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 				// mark as streaming
 				if (!llmCancelToken) {
-					this._setStreamState(threadId, { isRunning: undefined, error: { message: t("There was an unexpected error when sending your chat message."), fullError: null } })
-					break
+					// VOX: si esce subito. Con break il ciclo finiva e lo stato finale ({ isRunning: undefined }) cancellava l'errore:
+					// la chat restava ferma senza dire perché (per esempio «scegli un modello»)
+					this._setStreamState(threadId, { isRunning: undefined, error: errorBeforeStart ?? { message: t("There was an unexpected error when sending your chat message."), fullError: null } })
+					this._addUserCheckpoint({ threadId })
+					return
 				}
 
 				this._setStreamState(threadId, { isRunning: 'LLM', llmInfo: { displayContentSoFar: '', reasoningSoFar: '', toolCallSoFar: null }, interrupt: Promise.resolve(() => this._llmMessageService.abort(llmCancelToken)) })
@@ -1015,10 +1023,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 						shouldRetryLLM = true
 						this._setStreamState(threadId, { isRunning: 'idle', interrupt: idleInterruptor })
 						await timeout(RETRY_DELAY)
-						if (interruptedWhenIdle) {
-							this._setStreamState(threadId, undefined)
-							return
-						}
+						if (!isStillValid()) return
 						else
 							continue // retry
 					}
@@ -1051,7 +1056,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					// fermata o superata prima della richiesta di conferma: lo stato è di chi l'ha fermata o della nuova esecuzione
 					if (superseded) return
 					if (interrupted) {
-						this._setStreamState(threadId, undefined)
+						// interrotto: abortRunning ha già azzerato lo stato; azzerarlo di nuovo qui, quando lo strumento finisce
+						// davvero, fermerebbe una nuova esecuzione partita nel frattempo sulla stessa chat
 						return
 					}
 					if (awaitingUserApproval) { isRunningWhenEnd = 'awaiting_user' }
@@ -1239,18 +1245,24 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			const lastMsg = thread.messages[thread.messages.length - 1]
 			if (lastMsg?.role !== 'checkpoint')
 				this._addUserCheckpoint({ threadId })
-			this._setThreadState(threadId, { currCheckpointIdx: thread.messages.length - 1 })
+			// VOX: l'indice si legge dalla chat aggiornata: `thread` è quella di prima del checkpoint appena aggiunto, e
+			// l'indice puntava al messaggio precedente invece che al checkpoint
+			const messagesNow = this.state.allThreads[threadId]?.messages ?? thread.messages
+			this._setThreadState(threadId, { currCheckpointIdx: messagesNow.length - 1 })
 		}
 	}
 
 	jumpToCheckpointBeforeMessageIdx({ threadId, messageIdx, jumpToUserModified }: { threadId: string, messageIdx: number, jumpToUserModified: boolean }) {
+
+		// VOX: durante un'esecuzione non si salta: il controllo va prima di aggiungere il checkpoint temporaneo, che
+		// altrimenti finirebbe in mezzo ai messaggi dell'agente e farebbe tagliare quelli successivi al prossimo invio
+		if (this.streamState[threadId]?.isRunning) return
 
 		// if null, add a new temp checkpoint so user can jump forward again
 		this._makeUsStandOnCheckpoint({ threadId })
 
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return
-		if (this.streamState[threadId]?.isRunning) return
 
 		const c = this._getCheckpointBeforeMessage({ threadId, messageIdx })
 		if (c === undefined) return // should never happen
@@ -1387,8 +1399,14 @@ We only need to do it for files that were edited since `from`, ie files between 
 		p.then(() => {
 			if (threadId !== this.state.currentThreadId) notify({ error: null })
 		}).catch((e) => {
+			// VOX: un errore imprevisto (per esempio nel preparare i messaggi) lasciava la chat «in corso» per sempre, senza
+			// dire niente: se l'esecuzione risulta ancora in corso si ferma e si mostra l'errore
+			console.error('Vox: chat agent error', e)
+			if (this.streamState[threadId]?.isRunning) {
+				this._setStreamState(threadId, { isRunning: undefined, error: { message: getErrorMessage(e), fullError: e instanceof Error ? e : null } })
+				this._addUserCheckpoint({ threadId })
+			}
 			if (threadId !== this.state.currentThreadId) notify({ error: getErrorMessage(e) })
-			throw e
 		})
 	}
 
@@ -1480,20 +1498,30 @@ We only need to do it for files that were edited since `from`, ie files between 
 		// get prev and curr selections before clearing the message
 		const currSelns = thread.messages[messageIdx].state.stagingSelections || [] // staging selections for the edited message
 
+		// VOX: si ferma prima ciò che è in corso, poi si tagliano i messaggi. Prima l'interruzione avveniva dopo il taglio e
+		// aggiungeva la risposta parziale (e il checkpoint) in fondo ai messaggi rimasti, prima del messaggio modificato
+		if (this.streamState[threadId]?.isRunning) {
+			await this.abortRunning(threadId)
+		}
+		const threadAfterAbort = this.state.allThreads[threadId]
+		if (!threadAfterAbort) return
+
 		// clear messages up to the index
-		const slicedMessages = thread.messages.slice(0, messageIdx)
+		const slicedMessages = threadAfterAbort.messages.slice(0, messageIdx)
 		this._setState({
 			allThreads: {
 				...this.state.allThreads,
-				[thread.id]: {
-					...thread,
-					messages: slicedMessages
+				[threadAfterAbort.id]: {
+					...threadAfterAbort,
+					messages: slicedMessages,
+					// si riparte dalla fine dei messaggi rimasti: un checkpoint selezionato ora sarebbe oltre la fine
+					state: { ...threadAfterAbort.state, currCheckpointIdx: null },
 				}
 			}
 		})
 
 		// re-add the message and stream it
-		this._addUserMessageAndStreamResponse({ userMessage, _chatSelections: currSelns, threadId })
+		await this._addUserMessageAndStreamResponse({ userMessage, _chatSelections: currSelns, threadId })
 	}
 
 	// ---------- the rest ----------
@@ -1505,7 +1533,8 @@ We only need to do it for files that were edited since `from`, ie files between 
 		const fsPathsSet = new Set<string>()
 		const uris: URI[] = []
 		const addURI = (uri: URI) => {
-			if (!fsPathsSet.has(uri.fsPath)) uris.push(uri)
+			// ogni file una volta sola (prima veniva aggiunto due volte)
+			if (fsPathsSet.has(uri.fsPath)) return
 			fsPathsSet.add(uri.fsPath)
 			uris.push(uri)
 		}
@@ -1614,8 +1643,9 @@ We only need to do it for files that were edited since `from`, ie files between 
 				if (doesUriMatchTarget(uri)) {
 
 					// TODO make this logic more general
-					const prevUriStrs = prevUris.map(uri => uri.fsPath)
-					const shortenedUriStrs = shorten(prevUriStrs)
+					// VOX: idx è la posizione nei risultati della ricerca: si accorciano quelli (con i file già visti
+					// l'indice non corrispondeva, e oltre la loro lunghezza displayText era undefined e si andava in errore)
+					const shortenedUriStrs = shorten(uris.map(uri => uri.fsPath))
 					let displayText = shortenedUriStrs[idx]
 					const ellipsisIdx = displayText.lastIndexOf('…/');
 					if (ellipsisIdx >= 0) {
@@ -1825,15 +1855,34 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 
 	deleteThread(threadId: string): void {
+		// VOX: una chat in corso si ferma prima di cancellarla, altrimenti l'agente (o una IA in CLI) continuerebbe
+		// a lavorare senza più una chat da cui fermarlo
+		if (this.streamState[threadId]?.isRunning) {
+			void this.abortRunning(threadId)
+		}
 		const { allThreads: currentThreads } = this.state
 
 		// delete the thread
 		const newThreads = { ...currentThreads };
 		delete newThreads[threadId];
 
+		// la chat corrente non può mancare (getCurrentThread andrebbe in errore): se si cancella quella, nello stesso
+		// aggiornamento si passa a una chat vuota dello stesso progetto o a una nuova
+		let currentThreadId = this.state.currentThreadId
+		if (threadId === currentThreadId) {
+			const projectKey = projectKeyOfWorkspace(this._workspaceContextService)
+			const emptyThreadId = Object.keys(newThreads).find(id => newThreads[id]?.messages.length === 0 && newThreads[id]?.workspaceFolder === projectKey)
+			if (emptyThreadId) currentThreadId = emptyThreadId
+			else {
+				const newThread = newThreadObject(projectKey)
+				newThreads[newThread.id] = newThread
+				currentThreadId = newThread.id
+			}
+		}
+
 		// store the updated threads
 		this._storeAllThreads(newThreads);
-		this._setState({ ...this.state, allThreads: newThreads })
+		this._setState({ ...this.state, allThreads: newThreads, currentThreadId })
 	}
 
 	duplicateThread(threadId: string) {

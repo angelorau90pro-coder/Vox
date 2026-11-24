@@ -3,7 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ICodeEditor } from '../../../../../editor/browser/editorBrowser.js';
@@ -60,9 +60,14 @@ export class ConsistentItemService extends Disposable implements IConsistentItem
 		}
 
 
+		// VOX: gli ascoltatori di ogni editor stanno in un contenitore suo, rilasciato quando l'editor si chiude. Prima
+		// restavano registrati nel servizio per sempre (e con loro l'editor): uno per ogni editor aperto, compresi
+		// quelli dei blocchi di codice della chat
+		const listenersOfEditorId = this._register(new DisposableMap<string, DisposableStore>())
+
 		// when editor switches tabs (models)
-		const addTabSwitchListeners = (editor: ICodeEditor) => {
-			this._register(
+		const addTabSwitchListeners = (editor: ICodeEditor, store: DisposableStore) => {
+			store.add(
 				editor.onDidChangeModel(e => {
 					removeItemsFromEditor(editor)
 					putItemsOnEditor(editor, e.newModelUrl)
@@ -71,18 +76,23 @@ export class ConsistentItemService extends Disposable implements IConsistentItem
 		}
 
 		// when editor is disposed
-		const addDisposeListener = (editor: ICodeEditor) => {
-			this._register(editor.onDidDispose(() => {
+		const addDisposeListener = (editor: ICodeEditor, store: DisposableStore) => {
+			const editorId = editor.getId()
+			store.add(editor.onDidDispose(() => {
 				// anything on the editor has been disposed already
-				for (const itemId of this.itemIdsOfEditorId[editor.getId()] ?? [])
+				for (const itemId of this.itemIdsOfEditorId[editorId] ?? [])
 					delete this.disposeFnOfItemId[itemId]
+				delete this.itemIdsOfEditorId[editorId]
+				listenersOfEditorId.deleteAndDispose(editorId)
 			}))
 		}
 
 		const initializeEditor = (editor: ICodeEditor) => {
 			// if (editor.getModel()?.uri.scheme !== 'file') return // THIS BREAKS THINGS
-			addTabSwitchListeners(editor)
-			addDisposeListener(editor)
+			const store = new DisposableStore()
+			listenersOfEditorId.set(editor.getId(), store)
+			addTabSwitchListeners(editor, store)
+			addDisposeListener(editor, store)
 			putItemsOnEditor(editor, editor.getModel()?.uri ?? null)
 		}
 
@@ -91,7 +101,11 @@ export class ConsistentItemService extends Disposable implements IConsistentItem
 		this._register(this._editorService.onCodeEditorAdd(editor => { initializeEditor(editor) }))
 
 		// when an editor is deleted, remove its items
-		this._register(this._editorService.onCodeEditorRemove(editor => { removeItemsFromEditor(editor) }))
+		this._register(this._editorService.onCodeEditorRemove(editor => {
+			removeItemsFromEditor(editor)
+			delete this.itemIdsOfEditorId[editor.getId()]
+			listenersOfEditorId.deleteAndDispose(editor.getId())
+		}))
 	}
 
 
@@ -226,6 +240,9 @@ export class ConsistentEditorItemService extends Disposable {
 		}
 	> = {};
 
+	// VOX: ascoltatori di ogni editor, rilasciati quando l'editor si chiude (prima restavano nel servizio per sempre)
+	private readonly _listenersOfEditorId = this._register(new DisposableMap<string, DisposableStore>());
+
 	constructor(
 		@ICodeEditorService private readonly _editorService: ICodeEditorService,
 	) {
@@ -251,8 +268,18 @@ export class ConsistentEditorItemService extends Disposable {
 		this._register(
 			this._editorService.onCodeEditorRemove((editor) => {
 				this._removeAllItemsFromEditor(editor);
+				this._forgetEditor(editor.getId());
 			})
 		);
+	}
+
+	// l'editor non c'è più: i suoi elementi non si rimonteranno mai (un editor nuovo ha un altro id)
+	private _forgetEditor(editorId: string) {
+		for (const itemId of this.itemIdsByEditorId[editorId] ?? []) {
+			delete this.itemInfoById[itemId];
+		}
+		delete this.itemIdsByEditorId[editorId];
+		this._listenersOfEditorId.deleteAndDispose(editorId);
 	}
 
 	/**
@@ -262,11 +289,13 @@ export class ConsistentEditorItemService extends Disposable {
 	 */
 	private _initializeEditor(editor: ICodeEditor) {
 		const editorId = editor.getId();
+		const store = new DisposableStore();
+		this._listenersOfEditorId.set(editorId, store);
 
 		//
 		// Listen for model changes
 		//
-		this._register(
+		store.add(
 			editor.onDidChangeModel((e) => {
 				this._removeAllItemsFromEditor(editor);
 				if (!e.newModelUrl) {
@@ -288,9 +317,10 @@ export class ConsistentEditorItemService extends Disposable {
 		//
 		// When the editor is disposed, remove all items from it
 		//
-		this._register(
+		store.add(
 			editor.onDidDispose(() => {
 				this._removeAllItemsFromEditor(editor);
+				this._forgetEditor(editorId);
 			})
 		);
 

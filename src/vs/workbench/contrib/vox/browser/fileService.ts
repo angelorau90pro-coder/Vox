@@ -28,6 +28,9 @@ class FilePromptActionService extends Action2 {
 	}
 
 	async run(accessor: ServicesAccessor, uri: URI): Promise<void> {
+		// VOX: il servizio delle notifiche si prende subito: dopo il primo await l'accessor non vale più e nel catch
+		// accessor.get sollevava un altro errore al posto di mostrare quello vero
+		const notificationService = accessor.get(INotificationService)
 		try {
 			const fileService = accessor.get(IFileService);
 			const clipboardService = accessor.get(IClipboardService)
@@ -69,7 +72,6 @@ class FilePromptActionService extends Action2 {
 			await clipboardService.writeText(m)
 
 		} catch (error) {
-			const notificationService = accessor.get(INotificationService)
 			notificationService.error(error + '')
 		}
 	}

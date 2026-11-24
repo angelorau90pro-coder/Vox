@@ -150,7 +150,10 @@ class GenerateCommitMessageService extends Disposable implements IGenerateCommit
 				onText: () => { },
 				onFinalMessage: (params: { fullText: string }) => {
 					const match = params.fullText.match(/<output>([\s\S]*?)<\/output>/i)
-					const commitMessage = match ? match[1].trim() : ''
+					// VOX: senza i tag <output> (succede con i modelli piccoli) si usa tutta la risposta; prima il messaggio
+					// diventava vuoto e cancellava quello che l'utente aveva già scritto
+					const commitMessage = (match ? match[1] : params.fullText).trim()
+					if (!commitMessage) { reject(new Error(t("The model did not return a commit message."))); return }
 					resolve(commitMessage)
 				},
 				onError: (error) => {
@@ -177,7 +180,9 @@ class GenerateCommitMessageService extends Disposable implements IGenerateCommit
 	private onError(error: any) {
 		if (!isCancellationError(error)) {
 			console.error(error)
-			this.notificationService.error(({ ...localize2('voxFailedToGenerateCommitMessage', "Failed to generate commit message."), value: t("Failed to generate commit message.") }).value)
+			// VOX: anche il motivo (per esempio nessun modello scelto per i commit), non solo «non riuscito»
+			const reason = typeof error?.message === 'string' ? error.message : ''
+			this.notificationService.error(reason ? t("Failed to generate commit message: {0}", reason) : ({ ...localize2('voxFailedToGenerateCommitMessage', "Failed to generate commit message."), value: t("Failed to generate commit message.") }).value)
 		}
 	}
 }

@@ -160,18 +160,26 @@ registerAction2(class extends Action2 {
 
 		const chatThreadsService = accessor.get(IChatThreadService)
 		const editorService = accessor.get(ICodeEditorService)
+		const viewsService = accessor.get(IViewsService)
 
 		// get current selections and value to transfer
 		const oldThreadId = chatThreadsService.state.currentThreadId
 		const oldThread = chatThreadsService.state.allThreads[oldThreadId]
 
-		const oldUI = await oldThread?.state.mountedInfo?.whenMounted
+		// VOX: si aspetta la chat solo se è montata. Con la barra laterale chiusa la promessa non si risolve mai e
+		// Ctrl+Shift+L non faceva niente
+		const oldMountedInfo = oldThread?.state.mountedInfo
+		const oldUI = oldMountedInfo?.mountedIsResolvedRef.current ? await oldMountedInfo.whenMounted : undefined
 
 		const oldSelns = oldThread?.state.stagingSelections
 		const oldVal = oldUI?.textAreaRef?.current?.value
 
 		// open and focus new thread
 		chatThreadsService.openNewThread()
+		// la nuova chat deve essere visibile: senza la barra laterale aperta l'attesa del montaggio non finirebbe
+		if (!viewsService.isViewContainerVisible(VOX_VIEW_CONTAINER_ID)) {
+			await viewsService.openViewContainer(VOX_VIEW_CONTAINER_ID)
+		}
 		await chatThreadsService.focusCurrentChat()
 
 

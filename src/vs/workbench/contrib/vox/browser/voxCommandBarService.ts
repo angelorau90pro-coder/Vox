@@ -125,6 +125,18 @@ export class VoxCommandBarService extends Disposable implements IVoxCommandBarSe
 
 
 
+		// VOX: il file attivo per le scorciatoie (accetta/rifiuta, diff successivo). Prima cambiava solo quando un editor
+		// cambiava file: il servizio nasce tardi (Delayed), quindi il file già aperto non diventava mai attivo e le
+		// scorciatoie non facevano niente finché non si cambiava scheda; nemmeno passare a un altro gruppo lo aggiornava.
+		// Anche i file remoti (vscode-remote), che gli strumenti modificano come quelli locali
+		const isFileURI = (uri: URI | null | undefined): uri is URI => !!uri && (uri.scheme === Schemas.file || uri.scheme === Schemas.vscodeRemote)
+		const setActiveURI = (uri: URI | null | undefined) => {
+			if (!isFileURI(uri)) return
+			if (this.activeURI?.toString() === uri.toString()) return
+			this.activeURI = uri
+			this._onDidChangeActiveURI.fire({ uri })
+		}
+
 		// for every new editor, add the floating widget and update active URI
 		const disposablesOfEditorId: { [editorId: string]: IDisposable[] } = {};
 		const onCodeEditorAdd = (editor: ICodeEditor) => {
@@ -137,11 +149,11 @@ export class VoxCommandBarService extends Disposable implements IVoxCommandBarSe
 			const d1 = this._instantiationService.createInstance(AcceptRejectAllFloatingWidget, { editor });
 			disposablesOfEditorId[id].push(d1);
 			const d2 = editor.onDidChangeModel((e) => {
-				if (e.newModelUrl?.scheme !== 'file') return
-				this.activeURI = e.newModelUrl;
-				this._onDidChangeActiveURI.fire({ uri: e.newModelUrl })
+				setActiveURI(e.newModelUrl)
 			})
 			disposablesOfEditorId[id].push(d2);
+			const d3 = editor.onDidFocusEditorWidget(() => { setActiveURI(editor.getModel()?.uri) })
+			disposablesOfEditorId[id].push(d3);
 		}
 		const onCodeEditorRemove = (editor: ICodeEditor) => {
 			const id = editor.getId();
@@ -153,6 +165,7 @@ export class VoxCommandBarService extends Disposable implements IVoxCommandBarSe
 		this._register(this._codeEditorService.onCodeEditorAdd((editor) => { onCodeEditorAdd(editor) }))
 		this._register(this._codeEditorService.onCodeEditorRemove((editor) => { onCodeEditorRemove(editor) }))
 		this._codeEditorService.listCodeEditors().forEach(editor => { onCodeEditorAdd(editor) })
+		setActiveURI(this._codeEditorService.getActiveCodeEditor()?.getModel()?.uri)
 
 		// state updaters
 		this._register(this._editCodeService.onDidAddOrDeleteDiffZones(e => {

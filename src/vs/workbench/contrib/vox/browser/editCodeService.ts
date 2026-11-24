@@ -705,9 +705,11 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 	private _restoreVoxFileSnapshot = async (uri: URI, snapshot: VoxFileSnapshot) => {
 		// for each diffarea in this uri, stop streaming if currently streaming
+		// VOX: solo quelle di questo file. Prima si fermavano tutte: un Ctrl+Z o un ritorno a un checkpoint su un file
+		// interrompeva un Apply o un Ctrl+K in corso su un altro file
 		for (const diffareaid in this.diffAreaOfId) {
 			const diffArea = this.diffAreaOfId[diffareaid]
-			if (diffArea.type === 'DiffZone')
+			if (diffArea.type === 'DiffZone' && diffArea._URI.fsPath === uri.fsPath)
 				this._stopIfStreaming(diffArea)
 		}
 
@@ -1161,8 +1163,10 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		return
 	}
 
-	public async callBeforeApplyOrEdit(givenURI: URI | 'current') {
-		const uri = this._uriOfGivenURI(givenURI)
+	public async callBeforeApplyOrEdit(given: URI | 'current' | CallBeforeStartApplyingOpts) {
+		// QuickEdit (Ctrl+K) passa le opzioni con il diffareaid invece di un URI:
+		// si risale al file della zona Ctrl+K, altrimenti non verrebbe né aperto né salvato
+		const uri = given === 'current' || URI.isUri(given) ? this._uriOfGivenURI(given) : this._getURIBeforeStartApplying(given)
 		if (!uri) return
 		await this._voxModelService.initializeModel(uri)
 		await this._voxModelService.saveModel(uri) // save the URI
@@ -1509,6 +1513,9 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			// this._notifyError(e)
 			onDone()
 			this._undoHistory(uri)
+			// VOX: Ctrl+K non mostra l'errore da sé (la zona si chiude e il codice torna com'era): lo si dice qui.
+			// Apply invece lo mostra già chi ha chiamato, quando la promessa viene rifiutata
+			if (from === 'QuickEdit') this._notificationService.warn(t("Vox: Quick Edit failed: {0}", e.message))
 			throw e.fullError || new Error(e.message)
 		}
 
@@ -1541,6 +1548,9 @@ class EditCodeService extends Disposable implements IEditCodeService {
 				let prevIgnoredSuffix = ''
 				let aborted = false
 				let weAreAborting = false
+				// VOX: l'errore si raccoglie qui e si solleva dopo l'attesa. Sollevarlo dentro onError (chiamato dal canale)
+				// lo perdeva: la promessa non finiva mai e chi aveva chiamato non vedeva nessun errore
+				const llmErrorRef: { current: { message: string; fullError: Error | null } | null } = { current: null }
 
 
 				streamRequestIdRef.current = this._llmMessageService.sendLLMMessage({
@@ -1580,7 +1590,8 @@ class EditCodeService extends Disposable implements IEditCodeService {
 						resMessageDonePromise()
 					},
 					onError: (e) => {
-						onError(e)
+						llmErrorRef.current = e
+						resMessageDonePromise()
 					},
 					onAbort: () => {
 						if (weAreAborting) return
@@ -1589,10 +1600,13 @@ class EditCodeService extends Disposable implements IEditCodeService {
 						resMessageDonePromise()
 					},
 				})
+				// errore subito, per esempio nessun modello scelto (sendLLMMessage ritorna null)
+				if (llmErrorRef.current) onError(llmErrorRef.current)
 				// should never happen, just for safety
 				if (streamRequestIdRef.current === null) { return }
 
 				await messageDonePromise
+				if (llmErrorRef.current) onError(llmErrorRef.current)
 				if (aborted) {
 					throw new Error(t("Edit was interrupted by the user."))
 				}
@@ -1833,6 +1847,8 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 				let resMessageDonePromise: () => void = () => { }
 				const messageDonePromise = new Promise<void>((res, rej) => { resMessageDonePromise = res })
+				// VOX: come per la riscrittura, l'errore si solleva dopo l'attesa e non dentro le funzioni chiamate dal canale
+				const llmErrorRef: { current: { message: string; fullError: Error | null } | null } = { current: null }
 
 
 				const onText = (params: { fullText: string; fullReasoning: string }) => {
@@ -1879,9 +1895,12 @@ class EditCodeService extends Disposable implements IEditCodeService {
 							const originalBounds = findTextInCode(block.orig, originalFileCode, true, { returnType: 'lines' })
 							// if error
 							// Check for overlap with existing modified ranges
-							const hasOverlap = addedTrackingZoneOfBlockNum.some(trackingZone => {
+							// VOX: il confronto è sulle righe del file originale di tutti e due i blocchi. Prima usava startLine ed
+							// endLine dichiarate più sotto (const): dal secondo blocco in poi si andava in ReferenceError e Fast Apply
+							// con più blocchi si bloccava
+							const hasOverlap = typeof originalBounds !== 'string' && addedTrackingZoneOfBlockNum.some(trackingZone => {
 								const [existingStart, existingEnd] = trackingZone.metadata.originalBounds;
-								const hasNoOverlap = endLine < existingStart || startLine > existingEnd
+								const hasNoOverlap = originalBounds[1] < existingStart || originalBounds[0] > existingEnd
 								return !hasNoOverlap
 							});
 
@@ -2000,27 +2019,30 @@ class EditCodeService extends Disposable implements IEditCodeService {
 						onText(params)
 					},
 					onFinalMessage: async (params) => {
-						const { fullText } = params
-						onText(params)
-
-						const blocks = extractSearchReplaceBlocks(fullText)
-						if (blocks.length === 0) {
-							this._notificationService.info(t("Vox: We ran Fast Apply, but the LLM didn't output any changes."))
-						}
-						this._writeURIText(uri, originalFileCode, 'wholeFileRange', { shouldRealignDiffAreas: true })
-
-
 						try {
+							const { fullText } = params
+							onText(params)
+							// VOX: onText ha trovato un blocco sbagliato e ha già chiesto di rifare tutto: non si applica niente
+							if (shouldSendAnotherMessage) return
+
+							const blocks = extractSearchReplaceBlocks(fullText)
+							if (blocks.length === 0) {
+								this._notificationService.info(t("Vox: We ran Fast Apply, but the LLM didn't output any changes."))
+							}
+							this._writeURIText(uri, originalFileCode, 'wholeFileRange', { shouldRealignDiffAreas: true })
+
 							this._instantlyApplySRBlocks(uri, fullText)
 							onDone()
 							resMessageDonePromise()
 						}
 						catch (e) {
-							onError(e)
+							llmErrorRef.current = { message: e instanceof Error ? e.message : e + '', fullError: e instanceof Error ? e : null }
+							resMessageDonePromise()
 						}
 					},
 					onError: (e) => {
-						onError(e)
+						llmErrorRef.current = e
+						resMessageDonePromise()
 					},
 					onAbort: () => {
 						if (weAreAborting) return
@@ -2030,10 +2052,13 @@ class EditCodeService extends Disposable implements IEditCodeService {
 					},
 				})
 
+				// errore subito, per esempio nessun modello scelto (sendLLMMessage ritorna null)
+				if (llmErrorRef.current) onError(llmErrorRef.current)
 				// should never happen, just for safety
 				if (streamRequestIdRef.current === null) { break }
 
 				await messageDonePromise
+				if (llmErrorRef.current) onError(llmErrorRef.current)
 				if (aborted) {
 					throw new Error(t("Edit was interrupted by the user."))
 				}

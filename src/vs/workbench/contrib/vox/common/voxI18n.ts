@@ -389,6 +389,7 @@ export const it: Record<string, string> = {
 	"Internal Error": "Errore interno",
 	"{0}. Full response:\n{1}": "{0}. Risposta completa:\n{1}",
 	"❌ Failed to call tool \"{0}\" on server \"{1}\": {2}": "❌ Errore nella chiamata allo strumento \"{0}\" sul server \"{1}\": {2}",
+	"Failed to call tool \"{0}\" on server \"{1}\".": "Errore nella chiamata allo strumento \"{0}\" sul server \"{1}\".",
 	"Missing mcpServers property": "Proprietà mcpServers mancante",
 	"Error parsing MCP config file: {0}": "Errore nel file di configurazione MCP: {0}",
 	"edits": "modifiche",
@@ -695,7 +696,17 @@ export const it: Record<string, string> = {
 	"Download of {0} canceled.": "Scarico di {0} annullato.",
 	"Stop checking": "Ferma il controllo",
 	"Not enough disk space: the download stopped with {0} GB free (512 MB are kept free). The partial file was kept: free some space and download again to resume.": "Spazio su disco insufficiente: lo scarico si è fermato con {0} GB liberi (512 MB restano liberi). Il file parziale è rimasto: libera spazio e scarica di nuovo per riprendere.",
-	"The local model {0} is being removed: it was not started.": "Il modello locale {0} si sta togliendo: non è stato avviato."
+	"The local model {0} is being removed: it was not started.": "Il modello locale {0} si sta togliendo: non è stato avviato.",
+	"The local model did not start answering within {0} minutes: the conversation may be too long for this PC. Start a new chat or reduce the context in Settings > Local AI > Installed models.": "Il modello locale non ha cominciato a rispondere entro {0} minuti: la conversazione potrebbe essere troppo lunga per questo PC. Apri una nuova chat o riduci il contesto in Impostazioni > IA locali > Modelli installati.",
+	"Previous change": "Modifica precedente",
+	"Next change": "Modifica successiva",
+	"Previous file": "File precedente",
+	"Next file": "File successivo",
+	"Accept All or Reject All": "Accetta tutto o rifiuta tutto",
+	// servizi del workbench (Ctrl+K, messaggio di commit)
+	"Vox: Quick Edit failed: {0}": "Vox: modifica rapida non riuscita: {0}",
+	"The model did not return a commit message.": "Il modello non ha restituito un messaggio di commit.",
+	"Failed to generate commit message: {0}": "Impossibile generare il messaggio di commit: {0}"
 };
 
 export function t(english: string, ...parameters: unknown[]): string {
