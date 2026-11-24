@@ -150,6 +150,9 @@ export const resolveCliCommand = async (command: string): Promise<{ command: str
 				const [realRoot, realBinary] = await Promise.all([realpath(root), realpath(binary)]);
 				const inside = relative(realRoot, realBinary);
 				if (!inside || /^\.\.(?:[\\/]|$)/.test(inside) || isAbsolute(inside)) continue;
+				// Anche il percorso vero deve essere un file .exe: non una cartella con quel nome (installazione a metà) né un
+				// collegamento verso un batch.
+				if (!/\.exe$/i.test(realBinary) || !(await stat(realBinary)).isFile()) continue;
 				return { command: binary, args: [] };
 			}
 			if (process.platform === 'win32' && !/\.exe$/i.test(path)) continue;
@@ -226,7 +229,8 @@ const jsonFailure = (stdout: string): { message: string; failedMessage: string; 
 		const found = [event.message, event.error?.message, event.error?.data?.message, typeof event.error === 'string' ? event.error : undefined]
 			.find(candidate => typeof candidate === 'string' && candidate.trim());
 		// Si oscura il messaggio intero prima di prenderne la prima riga: un valore su più righe sparisce tutto.
-		const first = found ? redactSecrets(found.trim()).split(/\r?\n/)[0] : '';
+		// Prima si tolgono le sequenze ANSI, come per stderr: un colore dentro il nome della chiave ne impedirebbe l'oscuramento.
+		const first = found ? redactSecrets(found.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim()).split(/\r?\n/)[0] : '';
 		// Un turno fallito senza messaggio cancella quello di un turno precedente: la causa attuale va cercata altrove.
 		// Il messaggio di un turn.failed non finisce in `message`: se l'ultimo è vuoto, quello vecchio non torna dal ripiego.
 		if (event.type === 'turn.failed') { failed = true; failedMessage = first; }
@@ -234,28 +238,33 @@ const jsonFailure = (stdout: string): { message: string; failedMessage: string; 
 	}
 	return { message, failedMessage, failed };
 };
+const NO_JSON_FAILURE: ReturnType<typeof jsonFailure> = { message: '', failedMessage: '', failed: false };
 
 // Oscura chiavi, token e password. Prima i valori dopo un nome di chiave (api key, SECRET_KEY, secretKey,
 // AWS_SECRET_ACCESS_KEY, token, password...), così le sostituzioni dei token non toccano gli escape dentro le virgolette:
-// un valore tra virgolette si oscura per intero, anche con spazi, virgole o a capo (fino a 500 caratteri); se le
-// virgolette non si chiudono entro il limite si oscura il resto del testo.
-const SECRET_VALUE = /((?:(?:api|secret|access|private|auth)[_ -]?(?:access[_ -]?)?key|token|secret|password|passwd)["']?\s*[:=]\s*)(?:(["'])(?:\\[\s\S]|(?!\2)[^\\]){0,500}\2|(["'])[\s\S]*|[^\s"',}]+)/gi;
+// un valore tra virgolette si oscura per intero, anche con spazi, virgole o a capo (fino a 4096 caratteri, così un JWT
+// resta un valore solo e la causa scritta dopo si vede); se le virgolette non si chiudono entro il limite si oscura il
+// resto del testo. I due rami dentro le virgolette sono disgiunti: la ricerca resta lineare.
+const SECRET_VALUE = /((?:(?:api|secret|access|private|auth)[_ -]?(?:access[_ -]?)?key|token|secret|password|passwd)["']?\s*[:=]\s*)(?:(["'])(?:\\[\s\S]|(?!\2)[^\\]){0,4096}\2|(["'])[\s\S]*|[^\s"',}]+)/gi;
 const redactSecrets = (text: string) => text
 	.replace(SECRET_VALUE, (_match, prefix: string, closed?: string, openQuote?: string) => closed ? `${prefix}${closed}${t('[redacted]')}${closed}` : `${prefix}${openQuote ?? ''}${t('[redacted]')}`)
-	.replace(/\b(?:sk|pk|ghp|gho|github_pat|xox[bap]|AIza)[-_A-Za-z0-9]{8,}/g, t('[redacted]'))
-	.replace(/(bearer\s+)[^\s"']+/gi, `$1${t('[redacted]')}`);
+	.replace(/\b(?:sk|pk|gh[pousr]|github_pat|xox[bap]|AIza)[-_A-Za-z0-9]{8,}/g, t('[redacted]'))
+	.replace(/(bearer\s+)[^\s"']+/gi, `$1${t('[redacted]')}`)
+	// «Basic» solo dopo Authorization: da solo è una parola comune.
+	.replace(/(authorization["']?\s*[:=]\s*["']?basic\s+)[^\s"']+/gi, `$1${t('[redacted]')}`);
 
 // Riga breve e senza segreti che spiega perché la CLI è fallita (quota, login, modello non valido...).
 // Ordine: il messaggio di un turno fallito (codex turn.failed), poi stderr, poi l'ultimo errore JSON di stdout, poi
 // l'ultima riga del testo di stdout se spiega la causa (claude senza login scrive lì «Not logged in»): non si cerca
 // nel resto della risposta, dove una frase con «error» o «invalid» non è la causa.
-export const describeCliFailure = (agent: string, stderr: string, stdout = ''): string => {
+// `json` sono gli errori degli eventi JSON di stdout: chi li ha già letti li passa, e per le CLI a testo è vuoto (una riga
+// JSON dentro la risposta non è la causa).
+export const describeCliFailure = (agent: string, stderr: string, stdout = '', json = jsonFailure(stdout)): string => {
 	const generic = t("CLI {0} exited with an error. Check login and model in your terminal.", agent);
 	// Si oscura il testo intero prima di dividerlo in righe: un valore tra virgolette su più righe sparisce tutto.
 	const plain = (text: string) => redactSecrets(text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
 	// Le righe di stack («at funzione (file:riga)») non sono la causa anche se contengono «Error».
 	const useful = (l: string) => !/^at\s/.test(l) && /error|quota|login|logged|auth|api key|unauthori[sz]ed|not found|invalid|limit/i.test(l);
-	const json = jsonFailure(stdout);
 	// L'ultima riga di stdout si calcola solo se serve: oscurare e dividere una risposta lunga ha un costo.
 	const lastLine = () => { const last = plain(stdout).filter(l => !l.startsWith('{')).pop(); return last && useful(last) ? last : undefined; };
 	// Di stderr vale l'ultima riga utile: le prime sono spesso tentativi ripetuti, la causa finale viene dopo.
@@ -377,12 +386,12 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 					// lì la causa), si sostituisce con la versione oscurata, così nella cronologia non restano segreti.
 					// Senza `ansiTail`: una sequenza ANSI rimasta a metà non va nella cronologia né nel messaggio.
 					if (!structured && stdout) onText(redactSecrets(stdout.trim()));
-					finish(new Error(describeCliFailure(agent, stderrAll, stdout))); return;
+					finish(new Error(describeCliFailure(agent, stderrAll, stdout, structured ? jsonFailure(stdout) : NO_JSON_FAILURE))); return;
 				}
 				const answer = structured ? CLI_AGENTS[agent].parseOutput(stdout) : (stdout + ansiTail).trim();
-				const failure = structured ? jsonFailure(stdout) : undefined;
+				const failure = structured ? jsonFailure(stdout) : NO_JSON_FAILURE;
 				// Un turno fallito (turn.failed) è un errore anche con codice 0 e una risposta parziale.
-				if (failure?.failed || (!answer && failure?.message)) { finish(new Error(describeCliFailure(agent, stderrAll, stdout))); return; }
+				if (failure.failed || (!answer && failure.message)) { finish(new Error(describeCliFailure(agent, stderrAll, stdout, failure))); return; }
 				if (!answer) { finish(new Error(t("The CLI returned no text response."))); return; }
 				onText(answer);
 				finish(undefined, answer);

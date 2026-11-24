@@ -6,10 +6,10 @@ import { stripTypeScriptTypes } from 'node:module';
 import { test } from 'node:test';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
-const [capabilities, types, settings, dropdown, inputs, removedProviders] = await Promise.all([
+const [capabilities, types, settings, dropdown, inputs, removedProviders, service] = await Promise.all([
 	read('../../common/modelCapabilities.ts'), read('../../common/voxSettingsTypes.ts'),
 	read('../../common/voxSettingsService.ts'), read('../../browser/react/src/vox-settings-tsx/ModelDropdown.tsx'), read('../../browser/react/src/util/inputs.tsx'),
-	read('../../common/removedProviders.ts'),
+	read('../../common/removedProviders.ts'), read('../../common/sendLLMMessageService.ts'),
 ]);
 const between = (source, start, end) => {
 	assert.ok(source.includes(start) && source.includes(end), `Sezione di codice mancante: ${start}`);
@@ -175,6 +175,8 @@ test('il sottomenu rilegge i modelli di codex a ogni apertura e tiene solo l\'ul
 	// La rilettura parte da onOpen del menu, chiamato a ogni passaggio ad aperto (clic o tastiera).
 	assert.match(dropdown, /\n\t\t\t\tonOpen=\{reloadAccountModels\}\n/);
 	assert.match(inputs, /useEffect\(\(\) => \{\r?\n\t\tif \(isOpen\) onOpenRef\.current\?\.\(\);\r?\n\t\}, \[isOpen\]\);/);
+	// Con le opzioni nuove a menu aperto si ricalcolano posizione e larghezza (measureRef ha già l'elenco nuovo).
+	assert.match(inputs, /\t\tif \(previous !== options\) update\(\);\r?\n\t\}, \[isOpen, options, selectedIndex, getOptionsEqual, update\]\);/);
 	const source = between(dropdown, '\tconst lastRequest = useRef(0)', '\n\n\t// Costruisci le opzioni');
 	const pending = [];
 	let state = [];
@@ -182,7 +184,7 @@ test('il sottomenu rilegge i modelli di codex a ogni apertura e tiene solo l\'ul
 	const mount = agent => evaluate('useRef', 'useCallback', 'useEffect', 'agent', 'llmMessageService', 'setAccountModels',
 		js(source) + '; return { reloadAccountModels };'
 	)(value => ({ current: value }), fn => fn, fn => { cleanups.push(fn()); }, agent,
-		{ cliAgentModels: () => new Promise(resolve => pending.push(resolve)) },
+		{ cliAgentModels: () => new Promise((resolve, reject) => { resolve.reject = reject; pending.push(resolve); }) },
 		update => { state = typeof update === 'function' ? update(state) : update; });
 	const settle = async (index, models) => { pending[index](models); await new Promise(resolve => setImmediate(resolve)); };
 	// Il montaggio legge subito la cache; l'apertura successiva vede la cache aggiornata da codex.
@@ -199,14 +201,20 @@ test('il sottomenu rilegge i modelli di codex a ogni apertura e tiene solo l\'ul
 	await settle(3, ['nuovo']);
 	await settle(2, ['vecchio']);
 	assert.deepEqual(state, ['nuovo']);
+	// Un errore del canale non svuota i modelli già mostrati: il servizio non lo trasforma in un elenco vuoto.
+	reloadAccountModels();
+	pending[4].reject(new Error('canale'));
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(state, ['nuovo']);
+	assert.match(service, /this\.channel\.call<string\[\]>\('cliAgentModels', \{ agent \}\)\r?\n\t\t\.then\(models => Array\.isArray\(models\) \? models\.filter\(model => typeof model === 'string'\) : \[\]\);/);
 	// Dopo lo smontaggio (la pulizia vera dello useEffect) una risposta in ritardo non cambia lo stato.
 	reloadAccountModels();
 	cleanups[0]();
-	await settle(4, ['dopo lo smontaggio']);
+	await settle(5, ['dopo lo smontaggio']);
 	assert.deepEqual(state, ['nuovo']);
 	// Le altre IA non chiedono niente al processo principale, nemmeno al montaggio.
 	mount('claude').reloadAccountModels();
-	assert.equal(pending.length, 5);
+	assert.equal(pending.length, 6);
 });
 
 test('menu: dopo un cambio delle opzioni la voce attiva resta la stessa', () => {

@@ -100,6 +100,22 @@ if (mode === 'stdoutlogin') {
 	process.stdout.write('Not logged in · Please run /login token=ghp_ABCD');
 	setTimeout(() => { process.stdout.write('EFGHIJKL1234\n'); process.exitCode = 1; }, 150);
 }
+if (mode === 'jsonansi') {
+	// Messaggio di turn.failed con colori ANSI, anche dentro il nome della chiave.
+	process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: '\u001b[31mError:\u001b[0m quota reached pass\u001b[1mword=segretoansi123' } }) + '\n');
+	process.exitCode = 1;
+}
+if (mode === 'textjson') {
+	// CLI a testo la cui risposta contiene una riga JSON di turn.failed: la causa vera è su stderr.
+	process.stdout.write(JSON.stringify({ type: 'turn.failed', error: { message: 'finta causa nella risposta' } }) + '\n');
+	process.stderr.write('Error: vera causa su stderr\n');
+	process.exitCode = 1;
+}
+if (mode === 'longquoted') {
+	// Un valore tra virgolette lungo come un JWT (1500 caratteri) e poi la causa vera.
+	process.stderr.write(`Error: token: "${'a'.repeat(1500)}"\nError: quota exceeded\n`);
+	process.exitCode = 1;
+}
 if (mode === 'quota') {
 	process.stderr.write('altra riga\nError: Individual quota reached. Authorization: Bearer abc123SEGRETO token=ghp_ABCDEFGHIJKL1234\n');
 	process.exitCode = 1;

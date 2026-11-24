@@ -1396,7 +1396,10 @@ export const VoxCustomDropdownBox = <T extends NonNullable<any>>({
 		shownOptions.current = options;
 		if (!isOpen) return;
 		setActiveIndex((prev) => activeIndexAfterOptionsChange(prev, previous, options, selectedIndex, getOptionsEqual));
-	}, [isOpen, options, selectedIndex, getOptionsEqual]);
+		// La larghezza viene da measureRef, che ha le opzioni nuove solo dopo il commit: si ricalcola la posizione
+		// (il middleware size rilegge la misura), altrimenti il menu resta largo quanto l'elenco di prima.
+		if (previous !== options) update();
+	}, [isOpen, options, selectedIndex, getOptionsEqual, update]);
 
 	useEffect(() => {
 		if (!isOpen || activeIndex < 0 || activeIndex >= options.length) return;

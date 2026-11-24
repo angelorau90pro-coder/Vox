@@ -126,6 +126,10 @@ test('Windows: risolve shim npm e rifiuta batch generici', { skip: process.platf
 		await writeFile(binary, '', 'utf8');
 		await writeFile(shim, '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n"%dp0%\\bin\\nativa.exe"   %*\r\n', 'utf8');
 		assert.deepEqual(await resolveCliCommand(shim), { command: binary, args: [] });
+		// Una cartella che si chiama come l'eseguibile (installazione a metà) non è un eseguibile.
+		await mkdir(join(temp, 'cartella.exe'), { recursive: true });
+		await writeFile(shim, '@ECHO off\r\n"%dp0%\\cartella.exe" %*\r\n', 'utf8');
+		await assert.rejects(resolveCliCommand(shim), /non supportato/);
 		// Un commento che cita un altro eseguibile non conta, anche se quell'eseguibile esiste: vale la riga di avvio.
 		const vecchia = join(temp, 'vecchia.exe');
 		await writeFile(vecchia, '', 'utf8');
@@ -224,6 +228,9 @@ test('oscuramento: valori tra virgolette, a capo, non chiusi e «API key» con l
 		['Error: access_key: abcdefvalore', /access_key: \[oscurato\]$/],
 		// Un «Bearer» dentro il valore non deve consumare l'escape della virgoletta e scoprire il resto.
 		['Error: password: "x Bearer y\\"riga dopo virgolette" fine', /password: "\[oscurato\]" fine$/],
+		// Credenziali Basic dopo Authorization e token GitHub ghu_/ghs_/ghr_; «basic» da solo resta.
+		['Error: Authorization: Basic dXNlcjpwYXNzd29yZA== rejected', /Authorization: Basic \[oscurato\] rejected$/],
+		['Error: bad credentials ghu_abcdef123456 ghs_abcdef123456 ghr_abcdef123456', /credentials \[oscurato\] \[oscurato\] \[oscurato\]$/],
 	];
 	for (const [stderr, expected] of cases) {
 		const message = describeCliFailure('prova', stderr);
@@ -234,11 +241,18 @@ test('oscuramento: valori tra virgolette, a capo, non chiusi e «API key» con l
 	const multi = 'password: "segreto\nancora invalid"\n';
 	assert.doesNotMatch(describeCliFailure('prova', '', multi), /segreto|ancora/);
 	assert.doesNotMatch(describeCliFailure('prova', 'Error: password: "segreto\nError ancora"\n'), /segreto|ancora/);
-	// Virgolette chiuse oltre il limite di 500 caratteri: si oscura tutto il resto, niente frammenti dopo la prima riga.
-	const long = `Error: password: "${'x'.repeat(600)}\nError riga segreta"\n`;
+	// Virgolette chiuse oltre il limite di 4096 caratteri: si oscura tutto il resto, niente frammenti dopo la prima riga.
+	const long = `Error: password: "${'x'.repeat(5000)}\nError riga segreta"\n`;
 	assert.doesNotMatch(describeCliFailure('prova', long), /xxxx|riga segreta/);
-	// Parole che contengono «key» ma non sono chiavi non si toccano.
+	// Entro il limite il valore su più righe sparisce comunque per intero.
+	assert.doesNotMatch(describeCliFailure('prova', `Error: password: "${'x'.repeat(600)}\nError riga segreta"\n`), /xxxx|riga segreta/);
+	// Parole che contengono «key» ma non sono chiavi non si toccano, e nemmeno «basic» senza Authorization.
 	assert.match(describeCliFailure('prova', 'Error: monkey=banana'), /monkey=banana/);
+	assert.match(describeCliFailure('prova', 'Error: basic setup invalid'), /basic setup invalid/);
+	// Gli errori JSON passati da chi li ha già letti valgono al posto di quelli ricavati da stdout.
+	const noJson = { message: '', failedMessage: '', failed: false };
+	assert.match(describeCliFailure('prova', 'Error: da stderr', '{"type":"turn.failed","error":{"message":"da stdout"}}', noJson), /da stderr/);
+	assert.match(describeCliFailure('prova', 'Error: da stderr', '{"type":"turn.failed","error":{"message":"da stdout"}}'), /da stdout/);
 });
 
 test('ordine delle cause: turn.failed, poi stderr, poi errori JSON, poi l\'ultima riga di stdout', async () => {
@@ -263,7 +277,15 @@ test('ordine delle cause: turn.failed, poi stderr, poi errori JSON, poi l\'ultim
 		await assert.rejects(runCodex('stacktrace'), error => /model unavailable/.test(error.message) && !/handler|main\.js/.test(error.message));
 		// Ultimo turn.failed vuoto e stderr vuoto: la causa del turno precedente non torna dal ripiego.
 		await assert.rejects(runCodex('failedtwiceempty'), error => /Verificare il login/.test(error.message) && !/vecchia causa/.test(error.message));
+		// Colori ANSI nel messaggio JSON, anche dentro il nome della chiave: tolti prima di oscurare.
+		await assert.rejects(runCodex('jsonansi'), error => /Error: quota reached password=\[oscurato\]/.test(error.message) && !/segretoansi|\x1b/.test(error.message));
+		// Un valore tra virgolette di 1500 caratteri si oscura da solo: la causa scritta dopo resta visibile.
+		await assert.rejects(runCodex('longquoted'), error => /quota exceeded/.test(error.message) && !/aaaa/.test(error.message));
 	} finally { CLI_AGENTS.codex.buildArgs = original; }
+	// CLI a testo: una riga JSON dentro la risposta non è la causa, vale stderr.
+	CLI_AGENTS.copilot.buildArgs = fakeArgs('textjson');
+	try { await assert.rejects(runFake({}), error => /vera causa su stderr/.test(error.message) && !/finta causa/.test(error.message)); }
+	finally { CLI_AGENTS.copilot.buildArgs = originalArgs; }
 	CLI_AGENTS.copilot.buildArgs = fakeArgs('answerinvalid');
 	try { await assert.rejects(runFake({}), error => /Verificare il login/.test(error.message) && !/rejected/.test(error.message)); }
 	finally { CLI_AGENTS.copilot.buildArgs = originalArgs; }

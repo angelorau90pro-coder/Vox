@@ -54,7 +54,7 @@ export class LLMMessageChannel implements IServerChannel {
 	async call(_: unknown, command: string, params: any): Promise<any> {
 		if (command === 'cliAgentList') return listCliAgents(params);
 		// Dal renderer arriva solo il nome dell'IA, mai la cartella da leggere.
-		if (command === 'cliAgentModels') return listCliAgentModels(String(params?.agent ?? ''));
+		if (command === 'cliAgentModels') return listCliAgentModels(typeof params?.agent === 'string' ? params.agent : '');
 		try {
 			if (command === 'sendLLMMessage') {
 				this._callSendLLMMessage(params)
