@@ -72,10 +72,18 @@ export const QuickEditChat = ({
 			startBehavior: 'keep-conflicts',
 		} as const
 
-		await editCodeService.callBeforeApplyOrEdit(opts)
+		try {
+			await editCodeService.callBeforeApplyOrEdit(opts)
+		} catch (e) {
+			// VOX: niente modifica partita: la casella torna scrivibile invece di restare spenta per sempre
+			textAreaFnsRef.current?.enable()
+			console.error('Error before Quick Edit:', e)
+			return
+		}
 		const [newApplyingUri, applyDonePromise] = editCodeService.startApplying(opts) ?? []
+		if (!applyDonePromise) { textAreaFnsRef.current?.enable(); return }
 		// catch any errors by interrupting the stream
-		applyDonePromise?.catch(e => { if (newApplyingUri) editCodeService.interruptCtrlKStreaming({ diffareaid }) })
+		applyDonePromise.catch(e => { if (newApplyingUri) editCodeService.interruptCtrlKStreaming({ diffareaid }) })
 
 
 	}, [isStreamingRef, isDisabled, editCodeService, diffareaid])
@@ -96,6 +104,11 @@ export const QuickEditChat = ({
 
 	const keybindingString = accessor.get('IKeybindingService').lookupKeybinding(VOX_CTRL_K_ACTION_ID)?.getLabel()
 
+	// VOX: un solo ascoltatore di Esc per casella (prima se ne aggiungeva uno a ogni nuova ref, e Esc chiudeva più volte)
+	const onXRef = useRef(onX)
+	onXRef.current = onX
+	const escListenerElRef = useRef<HTMLTextAreaElement | null>(null)
+
 	const chatAreaRef = useRef<HTMLDivElement | null>(null)
 	return <div ref={sizerRef} style={{ maxWidth: 450 }} className={`py-2 w-full`}>
 		<VoxChatArea
@@ -115,11 +128,14 @@ export const QuickEditChat = ({
 				ref={useCallback((r: HTMLTextAreaElement | null) => {
 					textAreaRef.current = r
 					textAreaRef_(r)
-					r?.addEventListener('keydown', (e) => {
-						if (e.key === 'Escape')
-							onX()
-					})
-				}, [textAreaRef_, onX])}
+					if (r && escListenerElRef.current !== r) {
+						escListenerElRef.current = r
+						r.addEventListener('keydown', (e) => {
+							if (e.key === 'Escape')
+								onXRef.current()
+						})
+					}
+				}, [textAreaRef_])}
 				fnsRef={textAreaFnsRef}
 				placeholder={t("Enter instructions...")}
 				onChangeText={useCallback((newStr: string) => {
@@ -127,7 +143,7 @@ export const QuickEditChat = ({
 					onChangeText_(newStr)
 				}, [onChangeText_])}
 				onKeyDown={(e) => {
-					if (e.key === 'Enter' && !e.shiftKey) {
+					if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
 						onSubmit()
 						return
 					}

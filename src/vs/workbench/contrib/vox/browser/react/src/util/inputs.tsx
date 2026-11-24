@@ -18,6 +18,7 @@ import { asCssVariable } from '../../../../../../../platform/theme/common/colorU
 import { inputBackground, inputForeground } from '../../../../../../../platform/theme/common/colorRegistry.js';
 import { useFloating, autoUpdate, offset, flip, shift, size, autoPlacement } from '@floating-ui/react';
 import { URI } from '../../../../../../../base/common/uri.js';
+import { extUriBiasedIgnorePathCase } from '../../../../../../../base/common/resources.js';
 import { getBasename, getFolderName } from '../sidebar-tsx/SidebarChat.js';
 import { ChevronRight, File, Folder, FolderClosed, LucideProps } from 'lucide-react';
 import { StagingSelectionItem } from '../../../../common/chatThreadServiceTypes.js';
@@ -138,42 +139,16 @@ const scoreSubsequence = (text: string, pattern: string): number => {
 }
 
 
+// VOX: percorso relativo alla cartella del progetto che contiene il file, sempre con «/». Prima si confrontavano gli fsPath
+// con «/»: su Windows (dove l'fsPath usa «\\») nessun file risultava nel progetto, si vedeva il percorso completo e la
+// ricerca delle cartelle con @ restava vuota.
 function getRelativeWorkspacePath(accessor: ReturnType<typeof useAccessor>, uri: URI): string {
 	const workspaceService = accessor.get('IWorkspaceContextService');
-	const workspaceFolders = workspaceService.getWorkspace().folders;
-
-	if (!workspaceFolders.length) {
-		return uri.fsPath; // No workspace folders, return original path
-	}
-
-	// Sort workspace folders by path length (descending) to match the most specific folder first
-	const sortedFolders = [...workspaceFolders].sort((a, b) =>
-		b.uri.fsPath.length - a.uri.fsPath.length
-	);
-
-	// Add trailing slash to paths for exact matching
-	const uriPath = uri.fsPath.endsWith('/') ? uri.fsPath : uri.fsPath + '/';
-
-	// Check if the URI is inside any workspace folder
-	for (const folder of sortedFolders) {
-
-
-		const folderPath = folder.uri.fsPath.endsWith('/') ? folder.uri.fsPath : folder.uri.fsPath + '/';
-		if (uriPath.startsWith(folderPath)) {
-			// Calculate the relative path by removing the workspace folder path
-			let relativePath = uri.fsPath.slice(folder.uri.fsPath.length);
-			// Remove leading slash if present
-			if (relativePath.startsWith('/')) {
-				relativePath = relativePath.slice(1);
-			}
-			// console.log({ folderPath, relativePath, uriPath });
-
-			return relativePath;
-		}
-	}
-
-	// URI is not in any workspace folder, return original path
-	return uri.fsPath;
+	const folder = workspaceService.getWorkspaceFolder(uri);
+	if (!folder) return uri.fsPath; // fuori dal progetto: percorso completo
+	const relativePath = extUriBiasedIgnorePathCase.relativePath(folder.uri, uri);
+	if (relativePath === undefined || relativePath.startsWith('../')) return uri.fsPath;
+	return relativePath;
 }
 
 
@@ -227,29 +202,8 @@ const getOptionsAtPath = async (accessor: ReturnType<typeof useAccessor>, path: 
 					const relativePath = getRelativeWorkspacePath(accessor, uri)
 					const pathParts = relativePath.split('/');
 
-					// Get workspace info
-					const workspaceService = accessor.get('IWorkspaceContextService');
-					const workspaceFolders = workspaceService.getWorkspace().folders;
-
-					// Find the workspace folder containing this URI
-					let workspaceFolderUri: URI | undefined;
-					if (workspaceFolders.length) {
-						// Sort workspace folders by path length (descending) to match the most specific folder first
-						const sortedFolders = [...workspaceFolders].sort((a, b) =>
-							b.uri.fsPath.length - a.uri.fsPath.length
-						);
-
-						// Find the containing workspace folder
-						for (const folder of sortedFolders) {
-							const folderPath = folder.uri.fsPath.endsWith('/') ? folder.uri.fsPath : folder.uri.fsPath + '/';
-							const uriPath = uri.fsPath.endsWith('/') ? uri.fsPath : uri.fsPath + '/';
-
-							if (uriPath.startsWith(folderPath)) {
-								workspaceFolderUri = folder.uri;
-								break;
-							}
-						}
-					}
+					// la cartella del progetto che contiene il file
+					const workspaceFolderUri: URI | undefined = accessor.get('IWorkspaceContextService').getWorkspaceFolder(uri)?.uri;
 
 					if (workspaceFolderUri) {
 						// Add each directory and its parents to the map
@@ -1020,6 +974,8 @@ export const VoxSlider = ({
 	step = 1,
 	className = '',
 	width = 200,
+	ariaLabel,
+	ariaValueText,
 }: {
 	value: number;
 	onChange: (value: number) => void;
@@ -1030,7 +986,23 @@ export const VoxSlider = ({
 	step?: number;
 	className?: string;
 	width?: number;
+	ariaLabel?: string;
+	ariaValueText?: string;
 }) => {
+	// VOX: il cursore si usa anche da tastiera (frecce, Home, Fine) ed è annunciato come slider dai lettori di schermo
+	const onThumbKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+		if (disabled) return;
+		const stepSize = step > 0 ? step : 1;
+		let next: number | null = null;
+		if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = value + stepSize;
+		else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = value - stepSize;
+		else if (e.key === 'Home') next = min;
+		else if (e.key === 'End') next = max;
+		if (next === null) return;
+		e.preventDefault();
+		next = Math.max(min, Math.min(max, next));
+		if (next !== value) onChange(next);
+	};
 	// Calculate percentage for position
 	const percentage = ((value - min) / (max - min)) * 100;
 
@@ -1139,6 +1111,15 @@ export const VoxSlider = ({
 							bg-white rounded-full shadow-vox-sm ${disabled ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'}
 							border-2 border-vox-accent`}
 						style={{ left: `${percentage}%`, zIndex: 2 }}  // Ensure thumb is above the invisible clickable area
+						role='slider'
+						tabIndex={disabled ? -1 : 0}
+						aria-label={ariaLabel}
+						aria-valuemin={min}
+						aria-valuemax={max}
+						aria-valuenow={value}
+						aria-valuetext={ariaValueText}
+						aria-disabled={disabled || undefined}
+						onKeyDown={onThumbKeyDown}
 						onMouseDown={(e) => {
 							if (disabled) return;
 

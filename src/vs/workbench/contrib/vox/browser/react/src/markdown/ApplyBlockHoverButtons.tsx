@@ -87,9 +87,10 @@ export const CopyButton = ({ codeStr, toolTipName }: { codeStr: string | (() => 
 
 	useEffect(() => {
 		if (copyButtonText === CopyButtonText.Idle) return
-		setTimeout(() => {
+		const timer = setTimeout(() => {
 			setCopyButtonText(CopyButtonText.Idle)
 		}, COPY_FEEDBACK_TIMEOUT)
+		return () => clearTimeout(timer)
 	}, [copyButtonText])
 
 	const onCopy = useCallback(async () => {
@@ -286,11 +287,15 @@ const ApplyButtonsForTerminal = ({
 		try {
 			setIsShellRunning(true)
 			const terminalId = await terminalToolService.createPersistentTerminal({ cwd: null })
-			const { interrupt } = await terminalToolService.runCommand(
+			const { interrupt, resPromise } = await terminalToolService.runCommand(
 				codeStr,
 				{ type: 'persistent', persistentTerminalId: terminalId }
 			);
 			interruptToolRef.current = interrupt
+			// VOX: finito il comando il pulsante torna «Esegui» (prima restava «Ferma» per sempre)
+			resPromise.then(() => { }, () => { }).finally(() => {
+				if (interruptToolRef.current === interrupt) { interruptToolRef.current = null; setIsShellRunning(false) }
+			})
 		} catch (e) {
 			setIsShellRunning(false)
 			console.error('Failed to execute in terminal:', e)

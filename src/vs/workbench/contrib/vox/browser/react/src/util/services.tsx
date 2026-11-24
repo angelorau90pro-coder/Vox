@@ -415,6 +415,8 @@ export const useActiveURI = () => {
 	const commandBarService = accessor.get('IVoxCommandBarService')
 	const [s, ss] = useState(commandBarService.activeURI)
 	useEffect(() => {
+		// come gli altri hook: un cambio avvenuto tra il primo disegno e l'iscrizione non va perso
+		ss(commandBarService.activeURI)
 		const listener = () => { ss(commandBarService.activeURI) }
 		activeURIListeners.add(listener);
 		return () => { activeURIListeners.delete(listener) };
@@ -430,6 +432,7 @@ export const useMCPServiceState = () => {
 	const mcpService = accessor.get('IMCPService')
 	const [s, ss] = useState(mcpService.state)
 	useEffect(() => {
+		ss(mcpService.state)
 		const listener = () => { ss(mcpService.state) }
 		mcpListeners.add(listener);
 		return () => { mcpListeners.delete(listener) };

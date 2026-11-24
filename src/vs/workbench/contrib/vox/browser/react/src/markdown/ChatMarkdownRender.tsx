@@ -109,6 +109,9 @@ const Codespan = ({ text, className, onClick, tooltip }: { text: string, classNa
 
 }
 
+// ricerche dei collegamenti dei codespan in corso (vedi CodespanWithLink)
+const pendingCodespanLinks = new Set<string>()
+
 const CodespanWithLink = ({ text, rawText, chatMessageLocation }: { text: string, rawText: string, chatMessageLocation: ChatMessageLocation }) => {
 
 	const accessor = useAccessor()
@@ -130,13 +133,18 @@ const CodespanWithLink = ({ text, rawText, chatMessageLocation }: { text: string
 		// get link from cache
 		link = chatThreadService.getCodespanLink({ codespanStr: text, messageIdx, threadId })
 
-		if (link === undefined) {
+		// VOX: una sola ricerca alla volta per testo e messaggio. Durante lo streaming il componente si ridisegna a ogni
+		// pezzo di risposta, e prima ogni ridisegno faceva partire un'altra ricerca dei file finché la prima non finiva
+		const pendingKey = `${threadId}\u0000${messageIdx}\u0000${text}`
+		if (link === undefined && !pendingCodespanLinks.has(pendingKey)) {
 			// if no link, generate link and add to cache
+			pendingCodespanLinks.add(pendingKey)
 			chatThreadService.generateCodespanLink({ codespanStr: text, threadId })
 				.then(link => {
 					chatThreadService.addCodespanLink({ newLinkText: text, newLinkLocation: link, messageIdx, threadId })
 					setDidComputeCodespanLink(true) // rerender
-				})
+				}, () => { /* nessun collegamento: resta testo */ })
+				.finally(() => { pendingCodespanLinks.delete(pendingKey) })
 		}
 
 		if (link?.displayText) {
@@ -285,6 +293,10 @@ const ImageNotDrawn = ({ href, text, raw }: { href: string, text: string, raw: s
 		</a>
 	)
 }
+
+// VOX: fuori da RenderToken, dove `t` è la funzione delle traduzioni: dentro, `t` è il token (e chiamarlo dava
+// «t is not a function» proprio nel ramo dei token sconosciuti)
+const unknownTokenLabel = () => t("Unknown token rendered...")
 
 const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ...options }: { token: Token | string, inPTag?: boolean, codeURI?: URI, chatMessageLocation?: ChatMessageLocation, tokenIdx: string, } & RenderTokenOptions): React.ReactNode => {
 	const accessor = useAccessor()
@@ -565,7 +577,7 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 	// default
 	return (
 		<div className='bg-orange-50 rounded-sm overflow-hidden p-2'>
-			<span className='text-sm text-orange-500'>{t("Unknown token rendered...")}</span>
+			<span className='text-sm text-orange-500'>{unknownTokenLabel()}</span>
 		</div>
 	)
 }

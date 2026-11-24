@@ -186,6 +186,8 @@ const ReasoningOptionSlider = ({ featureName }: { featureName: FeatureName }) =>
 				max={max}
 				step={stepSize}
 				value={value}
+				ariaLabel={t("Thinking")}
+				ariaValueText={isReasoningEnabled ? t("{0} tokens", value) : t("Thinking disabled")}
 				onChange={(newVal) => {
 					const isOff = canTurnOffReasoning && newVal === valueIfOff
 					voxSettingsService.setOptionsOfModelSelection(featureName, modelSelection.providerName, modelSelection.modelName, { reasoningEnabled: !isOff, reasoningBudget: newVal })
@@ -217,6 +219,8 @@ const ReasoningOptionSlider = ({ featureName }: { featureName: FeatureName }) =>
 				max={max}
 				step={1}
 				value={value}
+				ariaLabel={t("Thinking")}
+				ariaValueText={isReasoningEnabled ? t(currentEffortCapitalized) : t("Thinking disabled")}
 				onChange={(newVal) => {
 					const isOff = canTurnOffReasoning && newVal === valueIfOff
 					voxSettingsService.setOptionsOfModelSelection(featureName, modelSelection.providerName, modelSelection.modelName, { reasoningEnabled: !isOff, reasoningEffort: values[newVal] ?? undefined })
@@ -340,7 +344,7 @@ export const VoxChatArea: React.FC<VoxChatAreaProps> = ({
 			onClick={(e) => {
 				const target = e.target instanceof Element ? e.target : null;
 				// i pulsanti tengono il proprio focus (per esempio la matita che apre un campo); dopo Stop il focus lo riporta onAbort
-				if (target?.closest('button, [role="button"], [role="combobox"], [role="listbox"], [role="option"], [role="switch"], input, select, textarea, a')) return;
+				if (target?.closest('button, [role="button"], [role="combobox"], [role="listbox"], [role="option"], [role="switch"], [role="slider"], input, select, textarea, a')) return;
 				onClickAnywhere?.()
 			}}
 		>
@@ -623,12 +627,15 @@ export const SelectedFiles = (
 		}
 
 		// add a prospective file if type === 'staging' and if the user is in a file, and if the file is not selected yet
+		// VOX: vale solo l'ultimo calcolo; uno più vecchio che finisce dopo (o dopo lo smontaggio) non rimette file superati
+		let cancelled = false
 		if (type === 'staging' && showProspectiveSelections) {
-			computeRecents().then((a) => setProspectiveSelections(a))
+			computeRecents().then((a) => { if (!cancelled) setProspectiveSelections(a) }, () => { })
 		}
 		else {
 			setProspectiveSelections([])
 		}
+		return () => { cancelled = true }
 	}, [recentUris, selections, type, showProspectiveSelections])
 
 
@@ -1878,13 +1885,14 @@ const CommandTool = ({ toolMessage, type, threadId }: { threadId: string } & ({
 	const componentParams: ToolHeaderParams = { title, desc1, desc1Info, isError, icon, isRejected, }
 
 
-	const effect = async () => {
+	const effect = async (isDisposed: () => boolean): Promise<(() => void) | undefined> => {
 		if (streamState?.isRunning !== 'tool') return
 		if (type !== 'run_command' || toolMessage.type !== 'running_now') return;
 
 		// wait for the interruptor so we know it's running
 
 		await streamState?.interrupt
+		if (isDisposed()) return
 		const container = divRef.current;
 		if (!container) return;
 
@@ -1907,11 +1915,16 @@ const CommandTool = ({ toolMessage, type, threadId }: { threadId: string } & ({
 		});
 
 		resizeObserver.observe(container);
-		return () => { terminal.detachFromElement(); resizeObserver?.disconnect(); }
+		return () => { try { terminal.detachFromElement() } catch { } resizeObserver.disconnect(); }
 	}
 
+	// VOX: la pulizia di `effect` arriva dentro una promessa: useEffect non la vedeva, e il terminale restava agganciato
+	// a un elemento tolto (con il ResizeObserver mai scollegato). Si conserva e si chiama allo smontaggio o al cambio.
 	useEffect(() => {
-		effect()
+		let disposed = false
+		let cleanup: (() => void) | undefined
+		effect(() => disposed).then(c => { if (disposed) c?.(); else cleanup = c }, () => { })
+		return () => { disposed = true; cleanup?.() }
 	}, [terminalToolsService, toolMessage, toolMessage.type, type]);
 
 	if (toolMessage.type === 'success') {

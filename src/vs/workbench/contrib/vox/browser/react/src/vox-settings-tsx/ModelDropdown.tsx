@@ -165,7 +165,7 @@ const CliAgentModelSelector = ({
 				}}
 				getOptionDisplayName={(opt) => opt.name}
 				getOptionDropdownName={(opt) => opt.name}
-				getOptionDropdownDetail={(opt) => opt.detail}
+				getOptionDropdownDetail={(opt) => opt.detail ?? ''}
 				getOptionsEqual={(a, b) => a.id === b.id}
 				className={className}
 				matchInputWidth={false}
@@ -316,7 +316,8 @@ const MemoizedModelDropdown = ({ featureName, className }: { featureName: Featur
 			setMemoizedOptions(newOptions)
 		}
 		oldOptionsRef.current = newOptions
-	}, [settingsState._modelOptions, filter])
+		// VOX: anche la modalità e le personalizzazioni dei modelli cambiano l'elenco (per esempio il filtro FIM del completamento)
+	}, [settingsState._modelOptions, settingsState.globalSettings.chatMode, settingsState.overridesOfModel, filter])
 
 	if (memoizedOptions.length === 0) { // Pretty sure this will never be reached unless filter is enabled
 		return <WarningBox text={emptyMessage?.message || t("No models available")} />

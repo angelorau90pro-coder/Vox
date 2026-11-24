@@ -219,17 +219,25 @@ const ConfirmButton = ({ children, onConfirm, className }: { children: React.Rea
 
 
 // This new dialog replaces the verbose UI with a single JSON override box.
-const SimpleModelSettingsDialog = ({
+// VOX: l'uscita anticipata sta in un involucro: gli hook del dialogo non devono dipendere da `isOpen` (regole degli hook)
+const SimpleModelSettingsDialog = (props: {
+	isOpen: boolean;
+	onClose: () => void;
+	modelInfo: { modelName: string; providerName: ProviderName; type: 'autodetected' | 'custom' | 'default' } | null;
+}) => {
+	if (!props.isOpen || !props.modelInfo) return null;
+	return <OpenModelSettingsDialog isOpen={props.isOpen} onClose={props.onClose} modelInfo={props.modelInfo} />
+}
+
+const OpenModelSettingsDialog = ({
 	isOpen,
 	onClose,
 	modelInfo,
 }: {
 	isOpen: boolean;
 	onClose: () => void;
-	modelInfo: { modelName: string; providerName: ProviderName; type: 'autodetected' | 'custom' | 'default' } | null;
+	modelInfo: { modelName: string; providerName: ProviderName; type: 'autodetected' | 'custom' | 'default' };
 }) => {
-	if (!isOpen || !modelInfo) return null;
-
 	const { modelName, providerName, type } = modelInfo;
 	const accessor = useAccessor()
 	const settingsState = useSettingsState()
@@ -636,16 +644,17 @@ const ProviderSetting = ({ providerName, settingName, subTextMd }: { providerNam
 	const voxSettingsService = accessor.get('IVoxSettingsService')
 	const settingsState = useSettingsState()
 
-	const settingValue = settingsState.settingsOfProvider[providerName][settingName] as string // this should always be a string in this component
-	if (typeof settingValue !== 'string') {
-		console.log('Error: Provider setting had a non-string value.')
-		return
-	}
-
 	// Create a stable callback reference using useCallback with proper dependencies
+	// (prima dell'uscita anticipata qui sotto: gli hook vanno chiamati sempre)
 	const handleChangeValue = useCallback((newVal: string) => {
 		voxSettingsService.setSettingOfProvider(providerName, settingName, newVal)
 	}, [voxSettingsService, providerName, settingName]);
+
+	const settingValue = settingsState.settingsOfProvider[providerName][settingName] as string // this should always be a string in this component
+	if (typeof settingValue !== 'string') {
+		console.log('Error: Provider setting had a non-string value.')
+		return null
+	}
 
 	return <ErrorBoundary>
 		<div className='my-1'>

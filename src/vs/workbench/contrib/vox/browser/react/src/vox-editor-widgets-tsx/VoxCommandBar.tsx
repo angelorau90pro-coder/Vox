@@ -112,7 +112,7 @@ export const VoxCommandBar = ({ uri, editor }: VoxCommandBarProps) => {
 
 	// when change URI, scroll to the proper spot
 	useEffect(() => {
-		setTimeout(() => {
+		const timer = setTimeout(() => {
 			// check undefined
 			if (!uri) return
 			const s = commandBarService.stateOfURI[uri.fsPath]
@@ -120,6 +120,8 @@ export const VoxCommandBar = ({ uri, editor }: VoxCommandBarProps) => {
 			const { diffIdx } = s
 			commandBarService.goToDiffIdx(diffIdx ?? 0)
 		}, 50)
+		// VOX: un cambio di file prima dei 50 ms (o la chiusura) non deve spostare l'editor sul file di prima
+		return () => clearTimeout(timer)
 	}, [uri, commandBarService])
 
 	if (uri?.scheme !== 'file') return null // don't show in editors that we made, they must be files
@@ -252,6 +254,7 @@ export const VoxCommandBar = ({ uri, editor }: VoxCommandBarProps) => {
 					<button
 						className="cursor-pointer"
 						disabled={upDownDisabled}
+						aria-label={t("Previous change")}
 						onClick={() => commandBarService.goToDiffIdx(prevDiffIdx)}
 						onKeyDown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
@@ -277,6 +280,7 @@ export const VoxCommandBar = ({ uri, editor }: VoxCommandBarProps) => {
 					<button
 						className="cursor-pointer"
 						disabled={upDownDisabled}
+						aria-label={t("Next change")}
 						onClick={() => commandBarService.goToDiffIdx(nextDiffIdx)}
 						onKeyDown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
@@ -299,6 +303,7 @@ export const VoxCommandBar = ({ uri, editor }: VoxCommandBarProps) => {
 					<button
 						className="cursor-pointer"
 						disabled={leftRightDisabled}
+						aria-label={t("Previous file")}
 						onClick={() => commandBarService.goToURIIdx(prevURIIdx)}
 						onKeyDown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
@@ -321,6 +326,7 @@ export const VoxCommandBar = ({ uri, editor }: VoxCommandBarProps) => {
 					<button
 						className="cursor-pointer"
 						disabled={leftRightDisabled}
+						aria-label={t("Next file")}
 						onClick={() => commandBarService.goToURIIdx(nextURIIdx)}
 						onKeyDown={(e) => {
 							if (e.key === 'Enter' || e.key === ' ') {
@@ -360,14 +366,18 @@ export const VoxCommandBar = ({ uri, editor }: VoxCommandBarProps) => {
 				)}
 				{/* Triple colon menu button */}
 				{showAcceptRejectAll && <div className='!px-0 !py-0 self-stretch flex justify-center items-center'>
-					<div
+					<button
+						type='button'
+						// VOX: un pulsante vero, raggiungibile da tastiera e con un nome per i lettori di schermo
+						aria-label={t("Accept All or Reject All")}
+						aria-expanded={showAcceptRejectAllButtons}
 						className="cursor-pointer px-1 self-stretch flex justify-center items-center"
 						onClick={() => setShowAcceptRejectAllButtons(!showAcceptRejectAllButtons)}
 					>
 						<EllipsisVertical
 							className="size-3"
 						/>
-					</div>
+					</button>
 				</div>}
 			</div>
 		</div>
