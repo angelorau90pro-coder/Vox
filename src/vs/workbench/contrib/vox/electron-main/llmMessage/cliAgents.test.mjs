@@ -2,11 +2,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdtemp, mkdir, writeFile, rm, rmdir, symlink } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { loadCliAgents } from '../../common/voxI18n.fixture.mjs';
-const { CLI_AGENTS, runCliAgent, resolveCliCommand, isCliAgentName } = await loadCliAgents();
+const { CLI_AGENTS, runCliAgent, resolveCliCommand, isCliAgentName, describeCliFailure } = await loadCliAgents();
 
 const folder = dirname(fileURLToPath(import.meta.url));
 const fixture = fileURLToPath(new URL('./cliAgents.fixture.mjs', import.meta.url));
@@ -114,7 +114,197 @@ test('Windows: risolve shim npm e rifiuta batch generici', { skip: process.platf
 		}
 		await writeFile(shim, '@ECHO off\r\necho %*\r\n', 'utf8');
 		await assert.rejects(resolveCliCommand(shim), /non supportato/);
+		// Shim reale di codex: il test "IF EXIST %dp0%\node.exe" non va scambiato per un eseguibile nativo.
+		await writeFile(join(temp, 'node.exe'), '', 'utf8');
+		await writeFile(shim, '@ECHO off\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n)\r\n"%_prog%"  "%dp0%\\entry.js" %*\r\n', 'utf8');
+		assert.deepEqual(await resolveCliCommand(shim), { command: process.execPath, args: [entry] });
+		await writeFile(shim, '@ECHO off\r\nIF EXIST "%dp0%\\node.exe" (\r\n  echo si\r\n)\r\n', 'utf8');
+		await assert.rejects(resolveCliCommand(shim), /non supportato/);
+		// Shim npm di un eseguibile nativo (claude 2.x): si avvia direttamente l'.exe del pacchetto.
+		const binary = join(temp, 'bin', 'nativa.exe');
+		await mkdir(dirname(binary), { recursive: true });
+		await writeFile(binary, '', 'utf8');
+		await writeFile(shim, '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n"%dp0%\\bin\\nativa.exe"   %*\r\n', 'utf8');
+		assert.deepEqual(await resolveCliCommand(shim), { command: binary, args: [] });
+		// Un commento che cita un altro eseguibile non conta, anche se quell'eseguibile esiste: vale la riga di avvio.
+		const vecchia = join(temp, 'vecchia.exe');
+		await writeFile(vecchia, '', 'utf8');
+		for (const comment of ['REM "%dp0%\\vecchia.exe" %*', ':: "%dp0%\\vecchia.exe" %*', '@rem "%dp0%\\vecchia.exe" %*']) {
+			await writeFile(shim, `@ECHO off\r\n${comment}\r\n"%dp0%\\bin\\nativa.exe"   %*\r\n`, 'utf8');
+			assert.deepEqual(await resolveCliCommand(shim), { command: binary, args: [] });
+			await writeFile(shim, `@ECHO off\r\n"%dp0%\\bin\\nativa.exe"   %*\r\n${comment}\r\n`, 'utf8');
+			assert.deepEqual(await resolveCliCommand(shim), { command: binary, args: [] });
+		}
+		// Un batch qualunque che contiene la stessa sequenza (echo, una condizione) non è uno shim di avvio.
+		for (const line of ['echo "%~dp0\\bin\\nativa.exe" %*', 'IF 1==1 "%dp0%\\bin\\nativa.exe" %*', 'start "" "%dp0%\\bin\\nativa.exe" %*']) {
+			await writeFile(shim, `@ECHO off\r\n${line}\r\n`, 'utf8');
+			await assert.rejects(resolveCliCommand(shim), /non supportato/, line);
+		}
+		// Varianti dello shim di avvio: %~dp0, barra, .EXE maiuscolo.
+		for (const line of ['"%~dp0\\bin\\nativa.exe" %*', "'%dp0%/bin/nativa.EXE' %*"]) {
+			await writeFile(shim, `@ECHO off\r\n${line}\r\n`, 'utf8');
+			assert.deepEqual(await resolveCliCommand(shim), { command: line.includes('EXE') ? join(temp, 'bin', 'nativa.EXE') : binary, args: [] }, line);
+		}
+		// Un eseguibile fuori dalla cartella dello shim si rifiuta, anche se esiste.
+		const fuori = join(dirname(temp), `${basename(temp)}-fuori.exe`);
+		await writeFile(fuori, '', 'utf8');
+		try {
+			await writeFile(shim, `@ECHO off\r\n"%dp0%\\..\\${basename(fuori)}" %*\r\n`, 'utf8');
+			await assert.rejects(resolveCliCommand(shim), /non supportato/);
+		} finally { await rm(fuori, { force: true }); }
+		// Uno shim in node_modules\.bin può risalire fino a quel node_modules, non oltre.
+		const bin = join(temp, 'node_modules', '.bin');
+		const pacchetto = join(temp, 'node_modules', 'pacchetto', 'nativa.exe');
+		await mkdir(bin, { recursive: true });
+		await mkdir(dirname(pacchetto), { recursive: true });
+		await writeFile(pacchetto, '', 'utf8');
+		const binShim = join(bin, 'nativa.cmd');
+		await writeFile(binShim, '@ECHO off\r\n"%dp0%\\..\\pacchetto\\nativa.exe" %*\r\n', 'utf8');
+		assert.deepEqual(await resolveCliCommand(binShim), { command: pacchetto, args: [] });
+		await writeFile(binShim, `@ECHO off\r\n"%dp0%\\..\\..\\bin\\nativa.exe" %*\r\n`, 'utf8');
+		await assert.rejects(resolveCliCommand(binShim), /non supportato/);
+		// L'eccezione vale solo per node_modules\.bin: da tools\.bin non si risale a tools.
+		const toolsBin = join(temp, 'tools', '.bin');
+		await mkdir(toolsBin, { recursive: true });
+		await writeFile(join(temp, 'tools', 'nativa.exe'), '', 'utf8');
+		const toolsShim = join(toolsBin, 'nativa.cmd');
+		await writeFile(toolsShim, '@ECHO off\r\n"%dp0%\\..\\nativa.exe" %*\r\n', 'utf8');
+		await assert.rejects(resolveCliCommand(toolsShim), /non supportato/);
+		// Una cartella interna il cui nome comincia con «..» non è una risalita.
+		const puntini = join(temp, '..pkg', 'nativa.exe');
+		await mkdir(dirname(puntini), { recursive: true });
+		await writeFile(puntini, '', 'utf8');
+		await writeFile(shim, '@ECHO off\r\n"%dp0%\\..pkg\\nativa.exe" %*\r\n', 'utf8');
+		assert.deepEqual(await resolveCliCommand(shim), { command: puntini, args: [] });
+		// Una giunzione dentro la cartella dello shim che punta fuori si rifiuta: conta il percorso vero.
+		const esterna = await mkdtemp(join(folder, 'cli-esterna-'));
+		try {
+			await writeFile(join(esterna, 'nativa.exe'), '', 'utf8');
+			await symlink(esterna, join(temp, 'giunzione'), 'junction');
+			await writeFile(shim, '@ECHO off\r\n"%dp0%\\giunzione\\nativa.exe" %*\r\n', 'utf8');
+			await assert.rejects(resolveCliCommand(shim), /non supportato/);
+		} finally {
+			// rmdir toglie solo la giunzione, non la cartella a cui punta.
+			await rmdir(join(temp, 'giunzione')).catch(() => {});
+			await rm(esterna, { recursive: true, force: true });
+		}
+		// Una riga di avvio dentro un blocco tra parentesi o dopo una continuazione con ^ non è l'avvio.
+		// Anche con un numero dispari di ^ in fondo, dopo un commento che continua o con due righe di avvio (ambiguo).
+		for (const body of ['IF 1==0 (\r\n"%dp0%\\bin\\nativa.exe" %*\r\n)', 'echo ^\r\n"%dp0%\\bin\\nativa.exe" %*', 'echo ^^^\r\n"%dp0%\\bin\\nativa.exe" %*',
+			'REM nota ^\r\n"%dp0%\\bin\\nativa.exe" %*', '"%dp0%\\bin\\nativa.exe" %*\r\n"%dp0%\\bin\\nativa.exe" %*']) {
+			await writeFile(shim, `@ECHO off\r\n${body}\r\n`, 'utf8');
+			await assert.rejects(resolveCliCommand(shim), /non supportato/, body);
+		}
+		// «^^» in fondo e «^(» sono caratteri letterali: niente continuazione e nessun blocco aperto.
+		for (const body of ['echo ^^\r\n"%dp0%\\bin\\nativa.exe" %*', 'echo ^(\r\n"%dp0%\\bin\\nativa.exe" %*']) {
+			await writeFile(shim, `@ECHO off\r\n${body}\r\n`, 'utf8');
+			assert.deepEqual(await resolveCliCommand(shim), { command: binary, args: [] }, body);
+		}
+		// Le parentesi dentro le virgolette o nei commenti non aprono un blocco.
+		await writeFile(shim, '@ECHO off\r\nREM (nota\r\nSET "x=(a"\r\n"%dp0%\\bin\\nativa.exe" %*\r\n', 'utf8');
+		assert.deepEqual(await resolveCliCommand(shim), { command: binary, args: [] });
+		await writeFile(shim, '@ECHO off\r\n"%dp0%\\bin\\nativa.exe"   %*\r\n', 'utf8');
+		await rm(binary);
+		await assert.rejects(resolveCliCommand(shim), /non supportato/);
 	} finally { await rm(temp, { recursive: true, force: true }); }
+});
+
+test('oscuramento: valori tra virgolette, a capo, non chiusi e «API key» con lo spazio', () => {
+	const cases = [
+		['Error: API key: "valore fittizio lungo"', /API key: "\[oscurato\]"$/],
+		['Error: api_key=abc123def456', /api_key=\[oscurato\]$/],
+		// Il testo si oscura prima di dividerlo in righe: il valore su più righe sparisce tutto.
+		['Error: password: "prima riga\nseconda riga" fine', /password: "\[oscurato\]" fine$/],
+		['Error: "password":"con \\"virgolette\\" dentro", altro', /"password":"\[oscurato\]", altro$/],
+		['Error: secret: "non chiusa fino alla fine', /secret: "\[oscurato\]$/],
+		["Error: token='a b c' dopo", /token='\[oscurato\]' dopo$/],
+		['Error: SECRET_KEY=abcdefvalore', /SECRET_KEY=\[oscurato\]$/],
+		['Error: secretKey: "abcdef valore"', /secretKey: "\[oscurato\]"$/],
+		['Error: AWS_SECRET_ACCESS_KEY=abcdefvalore', /AWS_SECRET_ACCESS_KEY=\[oscurato\]$/],
+		['Error: access_key: abcdefvalore', /access_key: \[oscurato\]$/],
+		// Un «Bearer» dentro il valore non deve consumare l'escape della virgoletta e scoprire il resto.
+		['Error: password: "x Bearer y\\"riga dopo virgolette" fine', /password: "\[oscurato\]" fine$/],
+	];
+	for (const [stderr, expected] of cases) {
+		const message = describeCliFailure('prova', stderr);
+		assert.match(message, expected, stderr);
+		assert.doesNotMatch(message, /fittizio|abc123|abcdef|riga|virgolette|chiusa|a b c/, stderr);
+	}
+	// Continuazione di un valore su più righe con una parola «utile»: l'ultima riga non esce in chiaro né da stdout né da stderr.
+	const multi = 'password: "segreto\nancora invalid"\n';
+	assert.doesNotMatch(describeCliFailure('prova', '', multi), /segreto|ancora/);
+	assert.doesNotMatch(describeCliFailure('prova', 'Error: password: "segreto\nError ancora"\n'), /segreto|ancora/);
+	// Virgolette chiuse oltre il limite di 500 caratteri: si oscura tutto il resto, niente frammenti dopo la prima riga.
+	const long = `Error: password: "${'x'.repeat(600)}\nError riga segreta"\n`;
+	assert.doesNotMatch(describeCliFailure('prova', long), /xxxx|riga segreta/);
+	// Parole che contengono «key» ma non sono chiavi non si toccano.
+	assert.match(describeCliFailure('prova', 'Error: monkey=banana'), /monkey=banana/);
+});
+
+test('ordine delle cause: turn.failed, poi stderr, poi errori JSON, poi l\'ultima riga di stdout', async () => {
+	const original = CLI_AGENTS.codex.buildArgs;
+	const runCodex = mode => { CLI_AGENTS.codex.buildArgs = fakeArgs(mode); return runCliAgent({ agent: 'codex', prompt: 'ciao', cwd: folder, command: process.execPath, onText: () => {} }); };
+	try {
+		await assert.rejects(runCodex('failedstderr'), /model unavailable/);
+		await assert.rejects(runCodex('erroronly'), /quota exceeded/);
+		await assert.rejects(runCodex('jsonwarnstderr'), error => /invalid model name/.test(error.message) && !/Reconnecting/.test(error.message));
+		// turn.failed con un messaggio vince su una riga utile di stderr.
+		await assert.rejects(runCodex('failedvsstderr'), error => /context window exceeded/.test(error.message) && !/retrying/.test(error.message));
+		// Un ultimo turn.failed vuoto non riusa la causa di un turno precedente: vale stderr.
+		await assert.rejects(runCodex('failedtwice'), error => /model unavailable/.test(error.message) && !/vecchia causa/.test(error.message));
+		// Di stderr vale l'ultima riga utile.
+		await assert.rejects(runCodex('stderrtwo'), error => /quota reached/.test(error.message) && !/retrying/.test(error.message));
+		// stderr lungo con un valore oltre 4000 caratteri: si oscura per intero e non esce niente del valore.
+		await assert.rejects(runCodex('stderrcut'), error => /password: "\[oscurato\]/.test(error.message) && !/pezzo/.test(error.message));
+		await assert.rejects(runCodex('stderrmultiline'), error => /password: "\[oscurato\]/.test(error.message) && !/riga|segreta/.test(error.message));
+		// Oltre 1 MiB stderr non si usa: messaggio generico, nessun pezzo del valore.
+		await assert.rejects(runCodex('stderrhuge'), error => /Verificare il login/.test(error.message) && !/xxxx|segreta/.test(error.message));
+		// Le righe di stack dopo la causa non la sostituiscono.
+		await assert.rejects(runCodex('stacktrace'), error => /model unavailable/.test(error.message) && !/handler|main\.js/.test(error.message));
+		// Ultimo turn.failed vuoto e stderr vuoto: la causa del turno precedente non torna dal ripiego.
+		await assert.rejects(runCodex('failedtwiceempty'), error => /Verificare il login/.test(error.message) && !/vecchia causa/.test(error.message));
+	} finally { CLI_AGENTS.codex.buildArgs = original; }
+	CLI_AGENTS.copilot.buildArgs = fakeArgs('answerinvalid');
+	try { await assert.rejects(runFake({}), error => /Verificare il login/.test(error.message) && !/rejected/.test(error.message)); }
+	finally { CLI_AGENTS.copilot.buildArgs = originalArgs; }
+});
+
+test('errore negli eventi JSON di stdout (codex): mostra la causa e oscura i segreti', async () => {
+	const original = CLI_AGENTS.codex.buildArgs;
+	try {
+		CLI_AGENTS.codex.buildArgs = fakeArgs('jsonerror');
+		await assert.rejects(runCliAgent({ agent: 'codex', prompt: 'ciao', cwd: folder, command: process.execPath, onText: () => {} }),
+			error => /model is not supported/.test(error.message) && !/metadata|stdin|ghp_ABCDEFGHIJKL1234/.test(error.message) && /oscurato/.test(error.message));
+		// Uscita 0 ma turno fallito: niente "nessuna risposta" generico, si mostra la causa.
+		CLI_AGENTS.codex.buildArgs = fakeArgs('jsonerror0');
+		await assert.rejects(runCliAgent({ agent: 'codex', prompt: 'ciao', cwd: folder, command: process.execPath, onText: () => {} }), /Usage limit reached/);
+		// Risposta parziale seguita da turn.failed con codice 0: è un errore, e la password tra virgolette sparisce per intero.
+		CLI_AGENTS.codex.buildArgs = fakeArgs('partialfailed');
+		const updates = [];
+		await assert.rejects(runCliAgent({ agent: 'codex', prompt: 'ciao', cwd: folder, command: process.execPath, onText: text => updates.push(text) }),
+			error => /stream interrupted/.test(error.message) && !/parole|segrete/.test(error.message) && /password: "\[oscurato\]", retry/.test(error.message) && /oscurato/.test(error.message) && /retry/.test(error.message));
+		assert.deepEqual(updates, []);
+	} finally { CLI_AGENTS.codex.buildArgs = original; }
+});
+
+test('causa su stdout con stderr vuoto (claude senza login), senza segreti nella cronologia', async () => {
+	const original = CLI_AGENTS.claude.buildArgs;
+	CLI_AGENTS.claude.buildArgs = fakeArgs('stdoutlogin');
+	const updates = [];
+	try {
+		await assert.rejects(runCliAgent({ agent: 'claude', prompt: 'ciao', cwd: folder, command: process.execPath, onText: text => updates.push(text) }),
+			error => /Not logged in/.test(error.message) && !/ghp_ABCD/.test(error.message));
+		// L'ultimo testo è quello che la chat salva: oscurato, anche se il token era spezzato fra due blocchi.
+		assert.ok(updates.length >= 2);
+		assert.match(updates.at(-1), /Not logged in.*oscurato/);
+		assert.doesNotMatch(updates.at(-1), /ghp_|EFGHIJKL1234/);
+		// Nel testo completo salvato in chat una password tra virgolette su più righe sparisce per intero.
+		CLI_AGENTS.claude.buildArgs = fakeArgs('multilinepw');
+		updates.length = 0;
+		await assert.rejects(runCliAgent({ agent: 'claude', prompt: 'ciao', cwd: folder, command: process.execPath, onText: text => updates.push(text) }), /Not logged in/);
+		assert.match(updates.at(-1), /password: "\[oscurato\]" fine/);
+		assert.doesNotMatch(updates.at(-1), /prima riga|seconda riga/);
+	} finally { CLI_AGENTS.claude.buildArgs = original; }
 });
 
 test('l\'errore mostra la causa diagnostica ma oscura i segreti', async () => {

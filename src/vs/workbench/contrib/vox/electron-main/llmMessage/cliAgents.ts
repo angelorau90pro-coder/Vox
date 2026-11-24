@@ -5,9 +5,9 @@
 
 import { t } from '../../common/voxI18n.js';
 import { spawn, execFile } from 'node:child_process';
-import { access, readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { access, readFile, mkdtemp, realpath, writeFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 type AgentOptions = { model?: string; cwd: string; write?: boolean; profile?: string; stdin?: boolean; promptFile?: string };
 type CliAgent = { command: string; buildArgs: (prompt: string, options: AgentOptions) => string[]; parseOutput: (stdout: string) => string };
@@ -98,6 +98,26 @@ const where = (command: string): Promise<string[]> => new Promise(resolvePaths =
 	});
 });
 
+// Riga di avvio di uno shim nativo: deve essere per intero «"%dp0%\...\x.exe" %*», quindi non conta dentro un echo,
+// una condizione su una riga o un commento; deve stare fuori da blocchi tra parentesi (IF ... ( ... )) e non seguire una
+// riga che continua con ^. Con più righe di avvio valide lo shim è ambiguo (rami diversi, GOTO) e si rifiuta.
+const nativeLaunch = (shim: string): string | undefined => {
+	let depth = 0, continued = false;
+	const found: string[] = [];
+	for (const line of shim.split(/\r?\n/)) {
+		const launch = line.match(/^\s*(["'])%(?:dp0|~dp0)%?[/\\]([^"'\r\n]+\.exe)\1[ \t]+%\*\s*$/i)?.[2];
+		if (launch && depth === 0 && !continued) found.push(launch);
+		// Parentesi e continuazioni contano solo fuori dalle virgolette. Un numero dispari di ^ in fondo continua la riga
+		// (anche in un commento: per prudenza si rifiuta la riga dopo); «^^» e «^(» sono caratteri letterali.
+		const unquoted = line.replace(/"[^"]*"?/g, '');
+		continued = /(?:^|[^^])(?:\^\^)*\^\s*$/.test(unquoted);
+		if (/^\s*(?:@?rem\b|::)/i.test(line)) continue;
+		const bare = unquoted.replace(/\^./g, '');
+		depth = Math.max(0, depth + (bare.match(/\(/g)?.length ?? 0) - (bare.match(/\)/g)?.length ?? 0));
+	}
+	return found.length === 1 ? found[0] : undefined;
+};
+
 // Nessuna shell: gli shim npm .cmd sono risolti al loro entry point JavaScript.
 // Gli altri batch vengono rifiutati: cmd.exe non preserva in sicurezza prompt arbitrari.
 export const resolveCliCommand = async (command: string): Promise<{ command: string; args: string[] }> => {
@@ -108,13 +128,28 @@ export const resolveCliCommand = async (command: string): Promise<{ command: str
 			if (/\.(cmd|bat)$/i.test(path)) {
 				const shim = await readFile(path, 'utf8');
 				const entry = shim.match(/(["'])%(?:dp0|~dp0)%?[/\\]([^"'\r\n]+\.(?:js|cjs|mjs))\1/i)?.[2];
-				if (!entry || !/node(?:\.exe)?/i.test(shim)) continue;
-				const script = resolve(dirname(path), entry);
-				await access(script);
-				// Il runtime incorporato nell'app (Electron) può essere più vecchio di quello richiesto dalla CLI
-				// (per esempio kimi usa API di Node recenti): si usa il node di sistema e solo in mancanza quello dell'app.
-				const systemNode = (await where('node')).find(candidate => process.platform !== 'win32' || /\.exe$/i.test(candidate));
-				return { command: systemNode ?? process.execPath, args: [script] };
+				if (entry && /node(?:\.exe)?/i.test(shim)) {
+					const script = resolve(dirname(path), entry);
+					await access(script);
+					// Il runtime incorporato nell'app (Electron) può essere più vecchio di quello richiesto dalla CLI
+					// (per esempio kimi usa API di Node recenti): si usa il node di sistema e solo in mancanza quello dell'app.
+					const systemNode = (await where('node')).find(candidate => process.platform !== 'win32' || /\.exe$/i.test(candidate));
+					return { command: systemNode ?? process.execPath, args: [script] };
+				}
+				// Shim npm che avvia un eseguibile nativo del pacchetto (per esempio claude 2.x: "%dp0%\...\claude.exe" %*):
+				// si avvia direttamente l'.exe.
+				const native = nativeLaunch(shim);
+				if (!native || process.platform !== 'win32') continue;
+				const binary = resolve(dirname(path), native);
+				// L'eseguibile deve stare nel pacchetto: sotto la cartella dello shim (npm globale) oppure, per uno shim in
+				// node_modules\.bin, sotto quel node_modules. Si confrontano i percorsi veri (realpath), così né un percorso
+				// che risale oltre ("..\..\Windows\...") né una giunzione verso l'esterno passano.
+				const shimDir = dirname(path);
+				const root = basename(shimDir).toLowerCase() === '.bin' && basename(dirname(shimDir)).toLowerCase() === 'node_modules' ? dirname(shimDir) : shimDir;
+				const [realRoot, realBinary] = await Promise.all([realpath(root), realpath(binary)]);
+				const inside = relative(realRoot, realBinary);
+				if (!inside || /^\.\.(?:[\\/]|$)/.test(inside) || isAbsolute(inside)) continue;
+				return { command: binary, args: [] };
 			}
 			if (process.platform === 'win32' && !/\.exe$/i.test(path)) continue;
 			return { command: path, args: [] };
@@ -131,17 +166,54 @@ export const listCliAgents = async (commands: Partial<Record<`${CliAgentName}Com
 	return found.filter((agent): agent is CliAgentName => agent !== null);
 };
 
+// Le CLI con output JSON (per esempio codex) scrivono l'errore negli eventi di stdout, non su stderr:
+// Gli elementi "item.completed" di tipo error sono avvisi e non contano. `failedMessage` è il messaggio dell'ultimo
+// turn.failed, `message` quello dell'ultimo evento "error" (anche un errore non fatale).
+// `failed` dice se il turno è fallito: allora è un errore anche con codice 0 e una risposta parziale.
+const jsonFailure = (stdout: string): { message: string; failedMessage: string; failed: boolean } => {
+	let message = '', failedMessage = '', failed = false;
+	for (const event of events(stdout)) {
+		if (event.type !== 'error' && event.type !== 'turn.failed') continue;
+		const found = [event.message, event.error?.message, event.error?.data?.message, typeof event.error === 'string' ? event.error : undefined]
+			.find(candidate => typeof candidate === 'string' && candidate.trim());
+		// Si oscura il messaggio intero prima di prenderne la prima riga: un valore su più righe sparisce tutto.
+		const first = found ? redactSecrets(found.trim()).split(/\r?\n/)[0] : '';
+		// Un turno fallito senza messaggio cancella quello di un turno precedente: la causa attuale va cercata altrove.
+		// Il messaggio di un turn.failed non finisce in `message`: se l'ultimo è vuoto, quello vecchio non torna dal ripiego.
+		if (event.type === 'turn.failed') { failed = true; failedMessage = first; }
+		else if (first) message = first;
+	}
+	return { message, failedMessage, failed };
+};
+
+// Oscura chiavi, token e password. Prima i valori dopo un nome di chiave (api key, SECRET_KEY, secretKey,
+// AWS_SECRET_ACCESS_KEY, token, password...), così le sostituzioni dei token non toccano gli escape dentro le virgolette:
+// un valore tra virgolette si oscura per intero, anche con spazi, virgole o a capo (fino a 500 caratteri); se le
+// virgolette non si chiudono entro il limite si oscura il resto del testo.
+const SECRET_VALUE = /((?:(?:api|secret|access|private|auth)[_ -]?(?:access[_ -]?)?key|token|secret|password|passwd)["']?\s*[:=]\s*)(?:(["'])(?:\\[\s\S]|(?!\2)[^\\]){0,500}\2|(["'])[\s\S]*|[^\s"',}]+)/gi;
+const redactSecrets = (text: string) => text
+	.replace(SECRET_VALUE, (_match, prefix: string, closed?: string, open?: string) => closed ? `${prefix}${closed}${t('[redacted]')}${closed}` : `${prefix}${open ?? ''}${t('[redacted]')}`)
+	.replace(/\b(?:sk|pk|ghp|gho|github_pat|xox[bap]|AIza)[-_A-Za-z0-9]{8,}/g, t('[redacted]'))
+	.replace(/(bearer\s+)[^\s"']+/gi, `$1${t('[redacted]')}`);
+
 // Riga breve e senza segreti che spiega perché la CLI è fallita (quota, login, modello non valido...).
-export const describeCliFailure = (agent: string, stderr: string): string => {
+// Ordine: il messaggio di un turno fallito (codex turn.failed), poi stderr, poi l'ultimo errore JSON di stdout, poi
+// l'ultima riga del testo di stdout se spiega la causa (claude senza login scrive lì «Not logged in»): non si cerca
+// nel resto della risposta, dove una frase con «error» o «invalid» non è la causa.
+export const describeCliFailure = (agent: string, stderr: string, stdout = ''): string => {
 	const generic = t("CLI {0} exited with an error. Check login and model in your terminal.", agent);
-	const lines = stderr.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-	const line = lines.find(l => /error|quota|login|logged|auth|api key|unauthori[sz]ed|not found|invalid|limit/i.test(l));
+	// Si oscura il testo intero prima di dividerlo in righe: un valore tra virgolette su più righe sparisce tutto.
+	const plain = (text: string) => redactSecrets(text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+	// Le righe di stack («at funzione (file:riga)») non sono la causa anche se contengono «Error».
+	const useful = (l: string) => !/^at\s/.test(l) && /error|quota|login|logged|auth|api key|unauthori[sz]ed|not found|invalid|limit/i.test(l);
+	const json = jsonFailure(stdout);
+	// L'ultima riga di stdout si calcola solo se serve: oscurare e dividere una risposta lunga ha un costo.
+	const lastLine = () => { const last = plain(stdout).filter(l => !l.startsWith('{')).pop(); return last && useful(last) ? last : undefined; };
+	// Di stderr vale l'ultima riga utile: le prime sono spesso tentativi ripetuti, la causa finale viene dopo.
+	const line = json.failedMessage || plain(stderr).filter(useful).pop() || json.message || lastLine();
 	if (!line) return generic;
-	const safe = line
-		.replace(/\b(?:sk|pk|ghp|gho|github_pat|xox[bap]|AIza)[-_A-Za-z0-9]{8,}/g, t('[redacted]'))
-		.replace(/(bearer\s+)[^\s"']+/gi, `$1${t('[redacted]')}`)
-		.replace(/((?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, `$1${t('[redacted]')}`)
-		.slice(0, 240);
+	// Già oscurata; si ripete per sicurezza prima di tagliare.
+	const safe = redactSecrets(line).slice(0, 240);
 	return t("CLI {0} exited with an error: {1}", agent, safe);
 };
 
@@ -237,16 +309,31 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 				stdout += piece.slice(0, piece.length - ansiTail.length).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
 				onText(stdout.trim());
 			});
-			// Di stderr si tiene solo una coda breve, usata per spiegare l'errore (quota, login, modello) dopo aver oscurato i segreti.
-			let stderrTail = '';
+			// stderr serve solo a spiegare l'errore (quota, login, modello) e si oscura per intero prima dell'uso: un taglio
+			// potrebbe lasciare un pezzo di valore senza il nome della chiave che lo fa oscurare. Oltre 1 MiB non si conserva
+			// e non si usa per la diagnosi: la causa si cerca negli altri canali o resta il messaggio generico.
+			let stderrAll = '', stderrOverflow = false;
 			child.stderr!.setEncoding('utf8');
-			child.stderr!.on('data', (chunk: string) => { stderrTail = (stderrTail + chunk).slice(-4000); });
+			child.stderr!.on('data', (chunk: string) => {
+				if (stderrOverflow) return;
+				stderrAll += chunk;
+				if (stderrAll.length > 1024 * 1024) { stderrAll = ''; stderrOverflow = true; }
+			});
 			child.on('error', () => finish(new Error(t("Unable to start CLI. Check path and installation."))));
 			child.on('close', code => {
 				if (finished) return;
 				if (stopError) { if (process.platform !== 'win32') finish(stopError); return; }
-				if (code !== 0) { finish(new Error(describeCliFailure(agent, stderrTail))); return; }
+				if (code !== 0) {
+					// Il testo già mostrato da una CLI a testo resta nella chat come risposta: se la CLI fallisce (spesso scrive
+					// lì la causa), si sostituisce con la versione oscurata, così nella cronologia non restano segreti.
+					// Senza `ansiTail`: una sequenza ANSI rimasta a metà non va nella cronologia né nel messaggio.
+					if (!structured && stdout) onText(redactSecrets(stdout.trim()));
+					finish(new Error(describeCliFailure(agent, stderrAll, stdout))); return;
+				}
 				const answer = structured ? CLI_AGENTS[agent].parseOutput(stdout) : (stdout + ansiTail).trim();
+				const failure = structured ? jsonFailure(stdout) : undefined;
+				// Un turno fallito (turn.failed) è un errore anche con codice 0 e una risposta parziale.
+				if (failure?.failed || (!answer && failure?.message)) { finish(new Error(describeCliFailure(agent, stderrAll, stdout))); return; }
 				if (!answer) { finish(new Error(t("The CLI returned no text response."))); return; }
 				onText(answer);
 				finish(undefined, answer);
