@@ -150,7 +150,7 @@ I test leggono il TypeScript togliendo i tipi, quindi non vedono gli errori di t
 
 Il repository non pubblica pacchetti pronti: l'app si costruisce dai sorgenti.
 
-1. Dopo `npm install`, esegui `npm run buildreact`: il pacchetto non sempre ricompila l'interfaccia React: senza quel passaggio, da un clone pulito la compilazione si ferma, e su una copia già usata entra nel pacchetto un'interfaccia vecchia.
+1. Dopo `npm install` non serve altro per l'interfaccia React: la compilazione del pacchetto (`compile-build`) esegue prima `npm run buildreact` da sola (il passo `vox-buildreact`). Per saltarlo, con un bundle appena compilato, imposta `VOX_SKIP_BUILDREACT=1`.
 2. Su un PC senza Windows 10 SDK, dopo ogni `npm install`, esegui `node build/vox-pacchetto/gulp-electron-senza-sdk.mjs`.
 3. `npm run gulp vscode-win32-x64` crea l'app in `..\VSCode-win32-x64` (circa 9 minuti). La variante `-min` oggi non funziona.
 4. `npm run gulp vscode-win32-x64-inno-updater`, poi `npm run gulp vscode-win32-x64-user-setup`, crea `.build/win32-x64/user-setup/VoxSetup.exe`.

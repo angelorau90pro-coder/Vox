@@ -152,3 +152,13 @@ test('_validatedModelState propaga description nelle ModelOption solo se present
 	]);
 	assert.equal(Object.hasOwn(validated._modelOptions[1], 'description'), false);
 });
+
+test('lettura delle impostazioni salvate: le voci aggiunte dopo prendono il valore predefinito, come nell\'importazione', () => {
+	const readStart = source.indexOf('\tasync readAndInitializeState() {');
+	const readEnd = source.indexOf('\tprivate async _readState()', readStart);
+	assert.ok(readStart > 0 && readEnd > readStart, 'forma di readAndInitializeState cambiata: aggiornare il test');
+	const read = source.slice(readStart, readEnd);
+	for (const key of ['settingsOfProvider', 'modelSelectionOfFeature', 'optionsOfModelSelection', 'globalSettings']) {
+		assert.match(read, new RegExp(`${key}: \\{ \\.\\.\\.defaults\\.${key}, \\.\\.\\.readS\\.${key} \\}`), key);
+	}
+});

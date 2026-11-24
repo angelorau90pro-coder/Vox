@@ -133,7 +133,13 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 			modelSelection,
 			mcpTools,
 			workspaceFolder: params.workspaceFolder ?? this.workspaceContextService.getWorkspace().folders.find(folder => folder.uri.scheme === 'file')?.uri.fsPath,
-		} satisfies MainSendLLMMessageParams);
+		} satisfies MainSendLLMMessageParams).catch(error => {
+			// VOX: la chiamata non è arrivata al processo principale (canale chiuso, parametri non trasferibili): senza
+			// questo la richiesta restava in attesa per sempre, con i suoi ascoltatori
+			const onErrorHook = this.llmMessageHooks.onError[requestId]
+			this._clearChannelHooks(requestId)
+			onErrorHook?.({ requestId, message: error instanceof Error ? error.message : t("AI request failed."), fullError: error instanceof Error ? error : null })
+		});
 
 		return requestId
 	}
@@ -147,7 +153,7 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 
 	abort(requestId: string) {
 		this.llmMessageHooks.onAbort[requestId]?.() // calling the abort hook here is instant (doesn't go over a channel)
-		this.channel.call('abort', { requestId } satisfies MainLLMMessageAbortParams);
+		this.channel.call('abort', { requestId } satisfies MainLLMMessageAbortParams).catch(e => console.error('Vox: abort failed', e));
 		this._clearChannelHooks(requestId)
 	}
 
@@ -167,13 +173,19 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 			...proxyParams,
 			settingsOfProvider,
 			requestId: requestId_,
-		} satisfies MainModelListParams<VoxLocalModelResponse>)
+		} satisfies MainModelListParams<VoxLocalModelResponse>).catch(error => {
+			const onErrorHook = this.listHooks.voxLocal.error[requestId_]
+			this._clearChannelHooks(requestId_)
+			onErrorHook?.({ requestId: requestId_, error: error instanceof Error ? error.message : String(error) })
+		})
 	}
 
 	private _clearChannelHooks(requestId: string) {
 		delete this.llmMessageHooks.onText[requestId]
 		delete this.llmMessageHooks.onFinalMessage[requestId]
 		delete this.llmMessageHooks.onError[requestId]
+		// VOX: anche l'ascoltatore dell'interruzione, altrimenti ne restava uno (con la sua chat) per ogni richiesta
+		delete this.llmMessageHooks.onAbort[requestId]
 
 		delete this.listHooks.voxLocal.success[requestId]
 		delete this.listHooks.voxLocal.error[requestId]

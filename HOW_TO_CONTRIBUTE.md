@@ -151,7 +151,7 @@ Dopo aver generato l'eseguibile con `npm run gulp vscode-win32-x64`:
 
 Il comando produce l'installer in `.build/win32-x64/user-setup/VoxSetup.exe`.
 
-Dopo una modifica ai componenti React, esegui `npm run buildreact` prima di creare l'eseguibile: `npm run gulp vscode-win32-x64` non sempre ricompila l'interfaccia React e può impacchettare quella vecchia.
+`npm run gulp vscode-win32-x64` (come gli altri pacchetti) ricompila da solo l'interfaccia React prima di compilare il resto (passo `vox-buildreact` di `build/gulpfile.compile.js`), così da un clone pulito non manca `browser/react/out` e non si impacchetta un'interfaccia vecchia. Se hai appena eseguito `npm run buildreact` puoi saltare il passo con la variabile d'ambiente `VOX_SKIP_BUILDREACT=1`.
 
 ### Icone e immagini
 

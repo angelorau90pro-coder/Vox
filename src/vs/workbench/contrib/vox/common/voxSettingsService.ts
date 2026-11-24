@@ -477,12 +477,21 @@ class VoxSettingsService extends Disposable implements IVoxSettingsService {
 
 		// the stored data structure might be outdated, so we need to update it here
 		try {
+			const defaults = defaultState()
 			readS = {
-				...defaultState(),
+				...defaults,
 				...readS,
 				// no idea why this was here, seems like a bug
 				// ...defaultSettingsOfProvider,
 				// ...readS.settingsOfProvider,
+				// VOX: come in `dangerousSetState`, le voci aggiunte dopo il salvataggio prendono il valore predefinito
+				// (un'impostazione globale mancante sarebbe `undefined`, cioè spenta, anche se il default è acceso)
+				settingsOfProvider: { ...defaults.settingsOfProvider, ...readS.settingsOfProvider },
+				modelSelectionOfFeature: { ...defaults.modelSelectionOfFeature, ...readS.modelSelectionOfFeature },
+				optionsOfModelSelection: { ...defaults.optionsOfModelSelection, ...readS.optionsOfModelSelection },
+				globalSettings: { ...defaults.globalSettings, ...readS.globalSettings },
+				lastModelOfCliAgent: { ...readS.lastModelOfCliAgent },
+				mcpUserStateOfName: { ...readS.mcpUserStateOfName },
 			}
 
 			for (const providerName of providerNames) {
@@ -766,13 +775,12 @@ class VoxSettingsService extends Disposable implements IVoxSettingsService {
 	}
 
 	// MCP Server State
+	// VOX: `newStates` è già lo stato completo (chi chiama unisce): unirlo di nuovo a quello attuale rimetteva i server
+	// appena tolti da `removeMCPUserStateOfNames`, che restavano salvati per sempre
 	private _setMCPUserStateOfName = async (newStates: MCPUserStateOfName) => {
 		const newState: VoxSettingsState = {
 			...this.state,
-			mcpUserStateOfName: {
-				...this.state.mcpUserStateOfName,
-				...newStates
-			}
+			mcpUserStateOfName: newStates,
 		};
 		this.state = _validatedModelState(newState);
 		await this._storeState();

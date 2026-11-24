@@ -37,6 +37,11 @@ type ClientInfo = {
 	mcpServerEntryJSON: MCPConfigFileEntryJSON,
 	mcpServer: MCPServerNonError,
 } | {
+	// VOX: server spento dall'utente: non si avvia (nessun processo, nessuna connessione) finché non lo riaccende
+	_client?: undefined,
+	mcpServerEntryJSON: MCPConfigFileEntryJSON,
+	mcpServer: MCPServerNonError,
+} | {
 	_client?: undefined,
 	mcpServerEntryJSON: MCPConfigFileEntryJSON,
 	mcpServer: MCPServerError,
@@ -44,6 +49,37 @@ type ClientInfo = {
 
 type InfoOfClientId = {
 	[clientId: string]: ClientInfo
+}
+
+// VOX: l'ambiente del server MCP: quello di Vox, con sopra le variabili scritte in mcp.json (non il contrario,
+// altrimenti PATH, chiavi e opzioni scelte dall'utente verrebbero coperte da quelle del processo principale).
+// Le variabili senza valore si tolgono: il processo figlio riceve solo testi.
+export const mcpServerEnv = (serverEnv: Record<string, string> | undefined, baseEnv: Record<string, string | undefined>): Record<string, string> => {
+	const env: Record<string, string> = {}
+	for (const [name, value] of Object.entries({ ...baseEnv, ...serverEnv })) {
+		if (typeof value === 'string') env[name] = value
+	}
+	return env
+}
+
+// VOX: il testo da mostrare per un errore qualsiasi. Un `Error` serializzato con JSON.stringify diventa «{}»
+// (message e stack non sono enumerabili): l'utente e il modello non saprebbero mai perché lo strumento è fallito.
+export const mcpErrorText = (err: unknown): string => {
+	if (typeof err === 'string') return err
+	if (err instanceof Error) return err.message || err.name
+	try { return JSON.stringify(err, null, 2) ?? String(err) } catch { return String(err) }
+}
+
+// VOX: il risultato di uno strumento MCP come testo. Tutte le parti di testo, nell'ordine (non solo la prima);
+// le altre parti (immagini, audio, risorse) si indicano senza il contenuto. Un risultato senza contenuto è valido.
+export const mcpToolResultText = (content: readonly { type: string, text?: unknown }[] | undefined): { text: string, unsupportedTypes: string[] } => {
+	const texts: string[] = []
+	const unsupportedTypes: string[] = []
+	for (const part of content ?? []) {
+		if (part?.type === 'text' && typeof part.text === 'string') texts.push(part.text)
+		else unsupportedTypes.push(String(part?.type))
+	}
+	return { text: texts.join('\n'), unsupportedTypes }
 }
 
 export class MCPChannel implements IServerChannel {
@@ -141,7 +177,9 @@ export class MCPChannel implements IServerChannel {
 				const prevServer = this.infoOfClientId[serverName]?.mcpServer;
 
 				// close and delete the old client
-				if (type === 'removed' || type === 'updated') {
+				// VOX: anche per un server «aggiunto» che il canale ha già: una finestra ricaricata (o una seconda finestra)
+				// riparte da zero e lo chiede di nuovo; senza chiuderlo, il processo del server restava acceso per sempre
+				if (type === 'removed' || type === 'updated' || this.infoOfClientId[serverName]) {
 					await this._closeClient(serverName)
 					delete this.infoOfClientId[serverName]
 					this.mcpEmitters.serverEvent.onDelete.fire({ response: { prevServer, name: serverName, } })
@@ -165,14 +203,25 @@ export class MCPChannel implements IServerChannel {
 	private async _createClientUnsafe(server: MCPConfigFileEntryJSON, serverName: string, isOn: boolean): Promise<ClientInfo> {
 
 		const clientConfig = getClientConfig(serverName)
-		const client = new Client(clientConfig)
+		let client = new Client(clientConfig)
 		let transport: Transport;
 		let info: MCPServerNonError;
 
+		if (!isOn) {
+			// VOX: spento dall'utente: non si avvia. Gli strumenti si leggono quando lo riaccende (`_toggleMCPServer`).
+			const command = server.url ? server.url.toString() : server.command ? `${server.command} ${server.args?.join(' ') || ''}` : ''
+			if (!server.url && !server.command) throw new Error(t("No url or command for server {0}", serverName));
+			return { mcpServerEntryJSON: server, mcpServer: { status: 'offline', tools: [], command } }
+		}
+
 		if (server.url) {
+			// VOX: in mcp.json l'indirizzo è un testo; i trasporti vogliono un URL (quello SSE legge `url.href`).
+			// Le intestazioni scritte in mcp.json (per esempio Authorization) vanno su ogni richiesta.
+			const url = new URL(server.url.toString())
+			const headers = server.headers ?? {}
 			// first try HTTP, fall back to SSE
 			try {
-				transport = new StreamableHTTPClientTransport(server.url);
+				transport = new StreamableHTTPClientTransport(url, { requestInit: { headers } });
 				await client.connect(transport);
 				console.log(`Connected via HTTP to ${serverName}`);
 				const { tools } = await client.listTools()
@@ -184,7 +233,11 @@ export class MCPChannel implements IServerChannel {
 				}
 			} catch (httpErr) {
 				console.warn(`HTTP failed for ${serverName}, trying SSE…`, httpErr);
-				transport = new SSEClientTransport(server.url);
+				// VOX: un client nuovo, perché quello del primo tentativo resta legato al trasporto fallito
+				await client.close().catch(() => { })
+				client = new Client(clientConfig)
+				// (le intestazioni vanno sui messaggi inviati; il flusso SSE in arrivo usa quelle predefinite dell'SDK)
+				transport = new SSEClientTransport(url, { requestInit: { headers } });
 				await client.connect(transport);
 				const { tools } = await client.listTools()
 				const toolsWithUniqueName = tools.map(({ name, ...rest }) => ({ name: this._addUniquePrefix(name), ...rest }))
@@ -200,10 +253,7 @@ export class MCPChannel implements IServerChannel {
 			transport = new StdioClientTransport({
 				command: server.command,
 				args: server.args,
-				env: {
-					...server.env,
-					...process.env
-				} as Record<string, string>,
+				env: mcpServerEnv(server.env, process.env),
 			});
 
 			await client.connect(transport)
@@ -241,9 +291,14 @@ export class MCPChannel implements IServerChannel {
 		} catch (err) {
 			console.error(`❌ Failed to connect to server "${serverName}":`, err)
 			const fullCommand = !serverConfig.command ? '' : `${serverConfig.command} ${serverConfig.args?.join(' ') || ''}`
-			const c: MCPServerError = { status: 'error', error: err + '', command: fullCommand, }
+			const c: MCPServerError = { status: 'error', error: mcpErrorText(err), command: fullCommand, }
 			return { mcpServerEntryJSON: serverConfig, mcpServer: c, }
 		}
+	}
+
+	// VOX: alla chiusura di Vox (app.ts) si chiudono i server avviati, invece di lasciarli al sistema operativo
+	closeAll(): Promise<void> {
+		return this._closeAllMCPServers().catch(e => console.error('Vox MCP: closing the servers failed', e))
 	}
 
 	private async _closeAllMCPServers() {
@@ -259,18 +314,26 @@ export class MCPChannel implements IServerChannel {
 		if (!info) return
 		const { _client: client } = info
 		if (client) {
-			await client.close()
+			// VOX: un server già caduto può fallire anche la chiusura: non deve fermare l'aggiornamento degli altri
+			try { await client.close() } catch (e) { console.error(`Vox MCP: closing ${serverName} failed`, e) }
 		}
 		console.log(`Closed MCP server ${serverName}`);
 	}
 
 
 	private async _toggleMCPServer(serverName: string, isOn: boolean) {
-		const prevServer = this.infoOfClientId[serverName]?.mcpServer
+		const info = this.infoOfClientId[serverName]
+		// VOX: un server che non c'è (mcp.json cambiato nel frattempo) non si accende né si spegne
+		if (!info) return
+		const prevServer = info.mcpServer
 		// Handle turning on the server
 		if (isOn) {
 			// this.mcpEmitters.serverEvent.onChangeLoading.fire(getLoadingServerObject(serverName, isOn))
-			const clientInfo = await this._createClientUnsafe(this.infoOfClientId[serverName].mcpServerEntryJSON, serverName, isOn)
+			// VOX: il client nuovo si salva (altrimenti ogni chiamata dopo la riaccensione trovava «client non trovato»)
+			// e quello vecchio si chiude; se l'avvio fallisce, il server mostra l'errore invece di restare in caricamento
+			await this._closeClient(serverName)
+			const clientInfo = await this._createClient(info.mcpServerEntryJSON, serverName, isOn)
+			this.infoOfClientId[serverName] = clientInfo
 			this.mcpEmitters.serverEvent.onUpdate.fire({
 				response: {
 					name: serverName,
@@ -282,8 +345,8 @@ export class MCPChannel implements IServerChannel {
 		// Handle turning off the server
 		else {
 			// this.mcpEmitters.serverEvent.onChangeLoading.fire(getLoadingServerObject(serverName, isOn))
-			this._closeClient(serverName)
-			delete this.infoOfClientId[serverName]._client
+			await this._closeClient(serverName)
+			this.infoOfClientId[serverName] = { mcpServerEntryJSON: info.mcpServerEntryJSON, mcpServer: { status: 'offline', tools: [], command: '' } }
 
 			this.mcpEmitters.serverEvent.onUpdate.fire({
 				response: {
@@ -315,23 +378,23 @@ export class MCPChannel implements IServerChannel {
 			arguments: params
 		})
 		const { content } = response as CallToolResult
-		const returnValue = content[0]
+		// VOX: tutte le parti di testo (non solo la prima); un risultato vuoto è un risultato, non un errore interno
+		const { text, unsupportedTypes } = mcpToolResultText(content)
 
-		if (returnValue.type === 'text') {
-			// handle text response
+		if (response.isError) {
+			throw new Error(t("Tool call error: {0}", text || unsupportedTypes.join(', ')))
+		}
 
-			if (response.isError) {
-				throw new Error(t("Tool call error: {0}", returnValue.text))
-			}
-
+		if (text || unsupportedTypes.length === 0) {
 			// handle success
 			return {
 				event: 'text',
-				text: returnValue.text,
+				text,
 				toolName,
 				serverName,
 			}
 		}
+		const returnValue = { type: unsupportedTypes[0] }
 
 		// if (returnValue.type === 'audio') {
 		// 	// handle audio response
@@ -370,15 +433,16 @@ export class MCPChannel implements IServerChannel {
 					codeDescription = t("Invalid Parameters");
 				if (code === -32603)
 					codeDescription = t("Internal Error");
-				errorMessage = t("{0}. Full response:\n{1}", codeDescription, JSON.stringify(err, null, 2))
+				// VOX: il messaggio dell'errore (per esempio il tempo scaduto) non è enumerabile: si aggiunge a parte
+				errorMessage = t("{0}. Full response:\n{1}", codeDescription || mcpErrorText(err), JSON.stringify({ message: err instanceof Error ? err.message : undefined, ...err }, null, 2))
 			}
 			// Check if it's an MCP error with a code
 			else if (typeof err === 'string') {
 				// String error
 				errorMessage = err;
 			} else {
-				// Unknown error format
-				errorMessage = JSON.stringify(err, null, 2);
+				// Unknown error format (VOX: per un Error il messaggio, non «{}»)
+				errorMessage = mcpErrorText(err);
 			}
 
 			const fullErrorMessage = t("❌ Failed to call tool \"{0}\" on server \"{1}\": {2}", toolName, serverName, errorMessage);

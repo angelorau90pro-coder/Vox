@@ -33,7 +33,7 @@ test('terminale dell\'agente: nome con e senza numero', () => {
 });
 
 test('terminale dell\'agente: i nomi che non lo sono danno null', () => {
-	for (const nome of ['', 'bash', 'Vox', 'Vox Agent (0)', 'Vox Agent ()', 'Vox Agent (x)', 'Agent (2)']) {
+	for (const nome of ['', 'bash', 'Vox', 'Vox Agent (0)', 'Vox Agent ()', 'Vox Agent (x)', 'Agent (2)', 'Mio Vox Agent (2)', 'Vox Agent (2) vecchio', 'Vox Agent (2)(3)']) {
 		assert.equal(idOfAgentTerminalName(nome), null, nome);
 	}
 });

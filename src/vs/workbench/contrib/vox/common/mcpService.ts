@@ -188,6 +188,8 @@ class MCPService extends Disposable implements IMCPService {
 		const allTools: InternalToolInfo[] = []
 		for (const serverName in this.state.mcpServerOfName) {
 			const server = this.state.mcpServerOfName[serverName];
+			// VOX: solo i server accesi e collegati: gli strumenti di un server spento (o in caricamento) non si offrono al modello
+			if (server.status !== 'success') continue
 			server.tools?.forEach(tool => {
 				allTools.push({
 					description: tool.description || '',
@@ -295,7 +297,7 @@ class MCPService extends Disposable implements IMCPService {
 			removedServerNames,
 			updatedServerNames,
 			userStateOfName: this.voxSettingsService.state.mcpUserStateOfName,
-		})
+		}).catch(e => console.error('Vox MCP: refresh failed', e))
 	}
 
 	stringifyResult(result: RawMCPToolCall): string {
@@ -319,12 +321,14 @@ class MCPService extends Disposable implements IMCPService {
 		this._setMCPServerState(serverName, { status: 'loading', tools: [] })
 
 		await this.voxSettingsService.setMCPServerState(serverName, { isOn });
-		this.channel.call('toggleMCPServer', { serverName, isOn })
+		await this.channel.call('toggleMCPServer', { serverName, isOn }).catch(e => console.error('Vox MCP: toggle failed', e))
 	}
 
 
 	public async callMCPTool(toolData: MCPToolCallParams): Promise<{ result: RawMCPToolCall }> {
-		const result = await this.channel.call<RawMCPToolCall>('callTool', toolData);
+		const result = await this.channel.call<RawMCPToolCall | undefined>('callTool', toolData);
+		// VOX: senza risposta (errore interno del canale) si dice che la chiamata è fallita, invece di un TypeError
+		if (!result) throw new Error(t("Failed to call tool \"{0}\" on server \"{1}\".", toolData.toolName, toolData.serverName))
 		if (result.event === 'error') {
 			throw new Error(t("Error: {0}", result.text))
 		}

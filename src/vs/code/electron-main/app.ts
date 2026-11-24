@@ -1259,6 +1259,8 @@ export class CodeApplication extends Disposable {
 		// Vox added this
 		const mcpChannel = new MCPChannel();
 		mainProcessElectronServer.registerChannel('vox-channel-mcp', mcpChannel);
+		// server MCP: alla chiusura si chiudono i processi avviati da Vox (come per i modelli locali qui sopra)
+		Event.once(this.lifecycleMainService.onWillShutdown)(e => e.join('vox.mcpServers', mcpChannel.closeAll()));
 
 		// Extension Host Debug Broadcasting
 		const electronExtensionHostDebugBroadcastChannel = new ElectronExtensionHostDebugBroadcastChannel(accessor.get(IWindowsMainService));

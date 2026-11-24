@@ -35,8 +35,8 @@ Per usare librerie Node o accedere al sistema dal lato `browser/`, Vox adotta du
 
 ### Canali IPC (`browser`/`common` ↔ `electron-main`)
 
-- **LLM e modelli**: `common/sendLLMMessageService.ts` (`ILLMMessageService`) comunica sul canale `vox-channel-llmMessage` con `electron-main/sendLLMMessageChannel.ts` (`LLMMessageChannel`). Espone i comandi `sendLLMMessage`, `abort`, `cliAgentList`, `voxLocalList` e gli eventi in streaming `onText_sendLLMMessage`, `onFinalMessage_sendLLMMessage`, `onError_sendLLMMessage`, oltre agli eventi di risposta dell'elenco dei modelli locali (`onSuccess_list_voxLocal`, `onError_list_voxLocal`).
-- **Server MCP**: `common/mcpService.ts` (`IMCPService`) comunica con `electron-main/mcpChannel.ts` (`MCPChannel`).
+- **LLM e modelli**: `common/sendLLMMessageService.ts` (`ILLMMessageService`) comunica sul canale `vox-channel-llmMessage` con `electron-main/sendLLMMessageChannel.ts` (`LLMMessageChannel`). Espone i comandi `sendLLMMessage`, `abort`, `cliAgentList`, `cliAgentModels`, `voxLocalList` e gli eventi in streaming `onText_sendLLMMessage`, `onFinalMessage_sendLLMMessage`, `onError_sendLLMMessage`, oltre agli eventi di risposta dell'elenco dei modelli locali (`onSuccess_list_voxLocal`, `onError_list_voxLocal`).
+- **Server MCP**: `common/mcpService.ts` (`IMCPService`) comunica sul canale `vox-channel-mcp` con `electron-main/mcpChannel.ts` (`MCPChannel`), che avvia i server di `~/.vox/mcp.json` (stdio, HTTP o SSE). Un server spento dall'utente non viene avviato; alla chiusura di Vox i server avviati si chiudono.
 - **Source Control (messaggi di commit)**: `browser/voxSCMService.ts` comunica con `electron-main/voxSCMMainService.ts`, esposto come canale `vox-channel-scm` con `ProxyChannel`. Tutti i canali sono registrati in `src/vs/code/electron-main/app.ts`.
 - **Informazioni di debug**: `common/voxDebugInfoService.ts` (`IVoxDebugInfoService`) usa `ProxyChannel.toService` sul canale `vox-channel-debug-info` con `electron-main/voxDebugInfoMainService.ts`, per il comando «Vox: Log Debug Info» (versione e sistema operativo, mostrati solo sul PC). Vox non raccoglie statistiche d'uso.
 

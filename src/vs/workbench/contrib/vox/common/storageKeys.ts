@@ -32,7 +32,8 @@ export function idOfAgentTerminalName(name: string): string | null {
 	for (const base of AGENT_TERMINAL_NAMES) {
 		if (name === base) return '1'
 		const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-		const match = name.match(new RegExp(`${escaped} \\((\\d+)\\)`))
+		// VOX: il nome intero, non una parte («Mio Vox Agent (2)» o «Vox Agent (2) vecchio» non sono dell'agente)
+		const match = name.match(new RegExp(`^${escaped} \\((\\d+)\\)$`))
 		if (match && Number(match[1]) >= 1) return match[1]
 	}
 	return null
