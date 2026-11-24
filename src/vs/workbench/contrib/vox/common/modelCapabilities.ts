@@ -31,10 +31,6 @@ export const defaultProviderSettings = {
 
 
 
-export const suggestedModelsOfCliAgent: Record<string, string[]> = {
-	codex: ['gpt-6.1-sol'],
-};
-
 export const defaultModelsOfProvider = {
 	voxLocal: [], // autodetected (modelli.json)
 	cliAgent: [],

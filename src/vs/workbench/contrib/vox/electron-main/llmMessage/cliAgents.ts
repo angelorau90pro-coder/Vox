@@ -5,8 +5,9 @@
 
 import { t } from '../../common/voxI18n.js';
 import { spawn, execFile } from 'node:child_process';
-import { access, readFile, mkdtemp, realpath, writeFile, rm } from 'node:fs/promises';
+import { access, readFile, mkdtemp, open, realpath, stat, writeFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
+import { constants as fsConstants } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 type AgentOptions = { model?: string; cwd: string; write?: boolean; profile?: string; stdin?: boolean; promptFile?: string };
@@ -166,6 +167,54 @@ export const listCliAgents = async (commands: Partial<Record<`${CliAgentName}Com
 	return found.filter((agent): agent is CliAgentName => agent !== null);
 };
 
+// Modelli che la CLI elenca per l'account dell'utente, da proporre nel sottomenu. Per ora solo codex, che tiene l'elenco
+// in models_cache.json (in CODEX_HOME o in ~/.codex): si prendono i modelli visibili ("list") in ordine di priorità
+// crescente. La cache la scrive codex per le credenziali con cui l'ha scaricata (campo `identity`, opaco: Vox non lo può
+// confrontare senza leggere le credenziali), quindi dopo un cambio di account resta quella vecchia finché codex non la
+// aggiorna al primo uso. Con qualunque errore l'elenco è vuoto; `codexHome` serve solo ai test e non arriva dal renderer.
+const MODELS_CACHE_LIMIT = 1024 * 1024;
+export const listCliAgentModels = async (agent: string, codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex')): Promise<string[]> => {
+	if (agent !== 'codex') return [];
+	// Un CODEX_HOME relativo codex lo risolve dalla sua cartella di lavoro (il workspace), Vox da quella dell'app: non si
+	// indovina quale cache usi, quindi nessun suggerimento. Su Windows anche «\codex» o «/codex» dipendono dall'unità
+	// corrente: valgono solo i percorsi con l'unità (C:\...) o UNC (\\server\condivisione\...).
+	const absolute = process.platform === 'win32' ? /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/.test(codexHome) : isAbsolute(codexHome);
+	if (!absolute) return [];
+	const cache = join(codexHome, 'models_cache.json');
+	let text: string;
+	try {
+		// Il tipo si controlla prima di aprire e di nuovo sul file aperto; su POSIX l'apertura non bloccante evita di restare
+		// fermi su una pipe messa al posto del file fra i due controlli. Si leggono al massimo MODELS_CACHE_LIMIT + 1 byte,
+		// in ciclo (una lettura può restituire solo un blocco, per esempio da una cartella di rete), così un file cresciuto
+		// nel frattempo non si carica per intero.
+		if (!(await stat(cache)).isFile()) return [];
+		const file = await open(cache, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+		try {
+			const info = await file.stat();
+			if (!info.isFile() || info.size > MODELS_CACHE_LIMIT) return [];
+			const buffer = Buffer.allocUnsafe(MODELS_CACHE_LIMIT + 1);
+			let total = 0;
+			while (total < buffer.length) {
+				const { bytesRead } = await file.read(buffer, total, buffer.length - total, total);
+				if (bytesRead === 0) break;
+				total += bytesRead;
+			}
+			if (total > MODELS_CACHE_LIMIT) return [];
+			text = buffer.toString('utf8', 0, total);
+		} finally { await file.close(); }
+	} catch { return []; }
+	let models: unknown;
+	try { models = JSON.parse(text)?.models; } catch { return []; }
+	if (!Array.isArray(models)) return [];
+	// Lo slug diventa un argomento di --model: niente «-» iniziale (runCliAgent lo rifiuta) e niente «__custom__» (la voce
+	// del sottomenu per scrivere un modello a mano).
+	const listed = models.flatMap((entry, index) => entry && typeof entry === 'object' && entry.visibility === 'list'
+		&& typeof entry.slug === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(entry.slug)
+		? [{ slug: entry.slug, priority: Number.isFinite(entry.priority) ? entry.priority as number : Infinity, index }] : []);
+	listed.sort((a, b) => a.priority === b.priority ? a.index - b.index : a.priority < b.priority ? -1 : 1);
+	return [...new Set(listed.map(model => model.slug))].slice(0, 20);
+};
+
 // Le CLI con output JSON (per esempio codex) scrivono l'errore negli eventi di stdout, non su stderr:
 // Gli elementi "item.completed" di tipo error sono avvisi e non contano. `failedMessage` è il messaggio dell'ultimo
 // turn.failed, `message` quello dell'ultimo evento "error" (anche un errore non fatale).
@@ -192,7 +241,7 @@ const jsonFailure = (stdout: string): { message: string; failedMessage: string; 
 // virgolette non si chiudono entro il limite si oscura il resto del testo.
 const SECRET_VALUE = /((?:(?:api|secret|access|private|auth)[_ -]?(?:access[_ -]?)?key|token|secret|password|passwd)["']?\s*[:=]\s*)(?:(["'])(?:\\[\s\S]|(?!\2)[^\\]){0,500}\2|(["'])[\s\S]*|[^\s"',}]+)/gi;
 const redactSecrets = (text: string) => text
-	.replace(SECRET_VALUE, (_match, prefix: string, closed?: string, open?: string) => closed ? `${prefix}${closed}${t('[redacted]')}${closed}` : `${prefix}${open ?? ''}${t('[redacted]')}`)
+	.replace(SECRET_VALUE, (_match, prefix: string, closed?: string, openQuote?: string) => closed ? `${prefix}${closed}${t('[redacted]')}${closed}` : `${prefix}${openQuote ?? ''}${t('[redacted]')}`)
 	.replace(/\b(?:sk|pk|ghp|gho|github_pat|xox[bap]|AIza)[-_A-Za-z0-9]{8,}/g, t('[redacted]'))
 	.replace(/(bearer\s+)[^\s"']+/gi, `$1${t('[redacted]')}`);
 

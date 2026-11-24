@@ -67,7 +67,7 @@ test('i fornitori sono due in ogni elenco: impostazioni, implementazioni, guardi
 	assert.match(guard, /allowedProviderNames = \['voxLocal', 'cliAgent'\] as const/);
 
 	const channel = await read('electron-main/sendLLMMessageChannel.ts');
-	assert.deepEqual([...channel.matchAll(/command === '(\w+)'/g)].map(match => match[1]), ['cliAgentList', 'sendLLMMessage', 'abort', 'voxLocalList']);
+	assert.deepEqual([...channel.matchAll(/command === '(\w+)'/g)].map(match => match[1]), ['cliAgentList', 'cliAgentModels', 'sendLLMMessage', 'abort', 'voxLocalList']);
 	assert.deepEqual([...channel.matchAll(/event === '(\w+)'/g)].map(match => match[1]).sort(), ['onError_list_voxLocal', 'onError_sendLLMMessage', 'onFinalMessage_sendLLMMessage', 'onSuccess_list_voxLocal', 'onText_sendLLMMessage']);
 });
 

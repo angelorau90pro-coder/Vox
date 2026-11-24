@@ -26,6 +26,7 @@ export interface ILLMMessageService {
 	sendLLMMessage: (params: ServiceSendLLMMessageParams) => string | null;
 	abort: (requestId: string) => void;
 	cliAgentList: () => Promise<string[]>;
+	cliAgentModels: (agent: string) => Promise<string[]>;
 	voxLocalList: (params: ServiceModelListParams<VoxLocalModelResponse>) => void;
 }
 
@@ -138,6 +139,10 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 	}
 
 	cliAgentList = (): Promise<string[]> => this.channel.call('cliAgentList', this.voxSettingsService.state.settingsOfProvider.cliAgent);
+
+	// Modelli che la CLI dichiara disponibili per l'account (per ora solo codex); elenco vuoto se non si sanno.
+	cliAgentModels = (agent: string): Promise<string[]> => this.channel.call<string[]>('cliAgentModels', { agent })
+		.then(models => Array.isArray(models) ? models.filter(model => typeof model === 'string') : [], () => []);
 
 	abort(requestId: string) {
 		this.llmMessageHooks.onAbort[requestId]?.() // calling the abort hook here is instant (doesn't go over a channel)

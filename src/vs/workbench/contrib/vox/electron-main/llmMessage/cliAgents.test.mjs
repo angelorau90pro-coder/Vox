@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, mkdir, writeFile, rm, rmdir, symlink } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { loadCliAgents } from '../../common/voxI18n.fixture.mjs';
-const { CLI_AGENTS, runCliAgent, resolveCliCommand, isCliAgentName, describeCliFailure } = await loadCliAgents();
+const { CLI_AGENTS, runCliAgent, resolveCliCommand, isCliAgentName, describeCliFailure, listCliAgentModels } = await loadCliAgents();
 
 const folder = dirname(fileURLToPath(import.meta.url));
 const fixture = fileURLToPath(new URL('./cliAgents.fixture.mjs', import.meta.url));
@@ -312,4 +312,75 @@ test('l\'errore mostra la causa diagnostica ma oscura i segreti', async () => {
 	try {
 		await assert.rejects(runFake({}), error => /quota reached/.test(error.message) && !/abc123SEGRETO|ghp_ABCDEFGHIJKL1234/.test(error.message) && /oscurato/.test(error.message));
 	} finally { CLI_AGENTS.copilot.buildArgs = originalArgs; }
+});
+
+test('modelli di codex dell\'account dalla sua cache (models_cache.json)', async () => {
+	const home = await mkdtemp(join(folder, 'codex-home-'));
+	const cache = join(home, 'models_cache.json');
+	const write = models => writeFile(cache, JSON.stringify({ fetched_at: '2026-11-24T07:25:46Z', client_version: '0.171.0', models }), 'utf8');
+	const savedHome = process.env.CODEX_HOME;
+	try {
+		// Visibili in ordine di priorità crescente; nascosti, slug non validi, voci non oggetto e duplicati si scartano;
+		// una priorità non numerica va in fondo, a parità resta l'ordine del file.
+		await write([
+			{ slug: 'gpt-reserve', visibility: 'hide', priority: 1 },
+			{ slug: 'gpt-5.6-luna', visibility: 'list', priority: 4 },
+			{ slug: 'gpt-6-luna', visibility: 'list', priority: 2 },
+			null, 'gpt-falso', 7,
+			{ slug: '-c', visibility: 'list', priority: 0 },
+			{ slug: '__custom__', visibility: 'list', priority: 0 },
+			{ slug: 42, visibility: 'list', priority: 0 },
+			{ slug: 'senza-priorita', visibility: 'list', priority: 'alta' },
+			{ slug: 'gpt-5.6-terra', visibility: 'list', priority: 3 },
+			{ slug: 'gpt-6-luna', visibility: 'list', priority: 9 },
+			{ slug: 'ultimo', visibility: 'list' },
+		]);
+		assert.deepEqual(await listCliAgentModels('codex', home), ['gpt-6-luna', 'gpt-5.6-terra', 'gpt-5.6-luna', 'senza-priorita', 'ultimo']);
+		// Le altre IA non hanno una cache: elenco vuoto. Anche «constructor» non legge niente.
+		assert.deepEqual(await listCliAgentModels('claude', home), []);
+		assert.deepEqual(await listCliAgentModels('constructor', home), []);
+		// CODEX_HOME vale come cartella predefinita.
+		process.env.CODEX_HOME = home;
+		assert.deepEqual((await listCliAgentModels('codex')).slice(0, 1), ['gpt-6-luna']);
+		// Un CODEX_HOME relativo non si risolve dalla cartella dell'app: codex lo risolverebbe dal workspace. Il percorso
+		// relativo punta davvero alla cache, quindi senza il controllo il test troverebbe i modelli.
+		const relativeHome = relative(process.cwd(), home);
+		assert.ok(relativeHome && !isAbsolute(relativeHome));
+		process.env.CODEX_HOME = relativeHome;
+		assert.deepEqual(await listCliAgentModels('codex'), []);
+		assert.deepEqual(await listCliAgentModels('codex', relativeHome), []);
+		if (process.platform === 'win32') {
+			// «\cartella» senza unità dipende dall'unità corrente: anche se qui punta alla cache, non vale.
+			assert.equal(home.slice(1, 2), ':');
+			assert.deepEqual(await listCliAgentModels('codex', home.slice(2)), []);
+			assert.deepEqual(await listCliAgentModels('codex', home.slice(2).replaceAll('\\', '/')), []);
+			// Con l'unità valgono sia le barre rovesciate sia quelle normali.
+			assert.deepEqual((await listCliAgentModels('codex', home.replaceAll('\\', '/'))).slice(0, 1), ['gpt-6-luna']);
+		}
+		// Esattamente 1 MiB si legge per intero; un byte in più no.
+		const sized = async bytes => {
+			const base = JSON.stringify({ models: [{ slug: 'limite', visibility: 'list', priority: 1 }], pad: '' });
+			await writeFile(cache, base.replace('"pad":""', `"pad":"${'x'.repeat(bytes - base.length)}"`), 'utf8');
+			return listCliAgentModels('codex', home);
+		};
+		assert.deepEqual(await sized(1024 * 1024), ['limite']);
+		assert.deepEqual(await sized(1024 * 1024 + 1), []);
+		// Al massimo 20 modelli.
+		await write(Array.from({ length: 30 }, (_, index) => ({ slug: `m${index}`, visibility: 'list', priority: index })));
+		assert.equal((await listCliAgentModels('codex', home)).length, 20);
+		// JSON non valido, forma inattesa, file oltre 1 MiB, cartella al posto del file, file assente: elenco vuoto.
+		await writeFile(cache, '{ non valido', 'utf8');
+		assert.deepEqual(await listCliAgentModels('codex', home), []);
+		await writeFile(cache, JSON.stringify({ models: { slug: 'x' } }), 'utf8');
+		assert.deepEqual(await listCliAgentModels('codex', home), []);
+		await writeFile(cache, JSON.stringify({ models: [{ slug: 'grande', visibility: 'list', priority: 1, pad: 'x'.repeat(1100 * 1024) }] }), 'utf8');
+		assert.deepEqual(await listCliAgentModels('codex', home), []);
+		await rm(cache);
+		assert.deepEqual(await listCliAgentModels('codex', home), []);
+		await mkdir(cache);
+		assert.deepEqual(await listCliAgentModels('codex', home), []);
+	} finally {
+		if (savedHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedHome;
+		await rm(home, { recursive: true, force: true });
+	}
 });

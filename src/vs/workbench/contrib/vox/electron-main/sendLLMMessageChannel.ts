@@ -10,7 +10,7 @@ import { t } from '../common/voxI18n.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { EventLLMMessageOnTextParams, EventLLMMessageOnErrorParams, EventLLMMessageOnFinalMessageParams, MainSendLLMMessageParams, AbortRef, SendLLMMessageParams, MainLLMMessageAbortParams, ModelListParams, EventModelListOnSuccessParams, EventModelListOnErrorParams, VoxLocalModelResponse, MainModelListParams, } from '../common/sendLLMMessageTypes.js';
-import { listCliAgents } from './llmMessage/cliAgents.js';
+import { listCliAgentModels, listCliAgents } from './llmMessage/cliAgents.js';
 import { sendLLMMessage } from './llmMessage/sendLLMMessage.js'
 import { sendLLMMessageToProviderImplementation } from './llmMessage/sendLLMMessage.impl.js';
 
@@ -53,6 +53,8 @@ export class LLMMessageChannel implements IServerChannel {
 	// browser uses this to call (see this.channel.call() in llmMessageService.ts for all usages)
 	async call(_: unknown, command: string, params: any): Promise<any> {
 		if (command === 'cliAgentList') return listCliAgents(params);
+		// Dal renderer arriva solo il nome dell'IA, mai la cartella da leggere.
+		if (command === 'cliAgentModels') return listCliAgentModels(String(params?.agent ?? ''));
 		try {
 			if (command === 'sendLLMMessage') {
 				this._callSendLLMMessage(params)

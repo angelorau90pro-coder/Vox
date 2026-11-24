@@ -6,9 +6,9 @@ import { stripTypeScriptTypes } from 'node:module';
 import { test } from 'node:test';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
-const [capabilities, types, settings, dropdown, removedProviders] = await Promise.all([
+const [capabilities, types, settings, dropdown, inputs, removedProviders] = await Promise.all([
 	read('../../common/modelCapabilities.ts'), read('../../common/voxSettingsTypes.ts'),
-	read('../../common/voxSettingsService.ts'), read('../../browser/react/src/vox-settings-tsx/ModelDropdown.tsx'),
+	read('../../common/voxSettingsService.ts'), read('../../browser/react/src/vox-settings-tsx/ModelDropdown.tsx'), read('../../browser/react/src/util/inputs.tsx'),
 	read('../../common/removedProviders.ts'),
 ]);
 const between = (source, start, end) => {
@@ -33,7 +33,7 @@ const initialize = between(settings, '\tasync readAndInitializeState()', '\n\tpr
 const { cleanRemovedProviders } = new Function(js(removedProviders) + '; return { cleanRemovedProviders };')();
 const api = evaluate('deepClone', 'getModelCapabilities', 'isVoxLocalCompletionModel', 'cleanRemovedProviders', js(logic) + `
 return { defaultState, _validatedModelState, _stateWithMergedDefaultModels, _modelsWithSwappedInNewModels,
- splitCliAgentModel, isFeatureNameDisabled, suggestedModelsOfCliAgent,
+ splitCliAgentModel, isFeatureNameDisabled,
  initialize: ${js('({' + initialize + '})')}.readAndInitializeState,
  setter: function() { ${js(setter)}; return setModelSelectionOfFeature; } };
 `)(structuredClone, () => ({ supportsFIM: false }), () => false, cleanRemovedProviders);
@@ -156,13 +156,71 @@ test('nomi con due punti e chiavi del prototipo non diventano valori ereditati',
 	assert.equal(service.state.lastModelOfCliAgent.constructor, '');
 });
 
-test('il sottomenu esclude i nascosti anche se suggeriti e accetta IA constructor', () => {
+test('il sottomenu propone i modelli dell\'account, esclude i nascosti e accetta IA constructor', () => {
 	const optionsSource = between(dropdown, '\tconst options = useMemo<CliModelItem[]>', '\n\tconst selectedOption');
-	const optionsFor = (agent, models) => evaluate('useMemo', 'agent', 'currentSubModel', 'settingsState', 'suggestedModelsOfCliAgent',
+	const optionsFor = (agent, models, accountModels = []) => evaluate('useMemo', 'agent', 'currentSubModel', 'settingsState', 'accountModels',
 		js(optionsSource) + '; return options;'
-	)(fn => fn(), agent, '', stateWithCli(...models), api.suggestedModelsOfCliAgent);
-	assert.ok(!optionsFor('codex', [model('codex:gpt-6.1-sol', 'custom', true)]).some(o => o.id === 'gpt-6.1-sol'));
+	)(fn => fn(), agent, '', stateWithCli(...models), accountModels);
+	// Senza cache dell'account nessun modello fisso: solo Predefinito e Personalizzato.
+	assert.deepEqual(optionsFor('codex', []).map(o => o.id), ['', '__custom__']);
+	const account = optionsFor('codex', [], ['gpt-6-luna', 'gpt-5.6-terra', 'gpt-6-luna', '__custom__']);
+	assert.deepEqual(account.map(o => o.id), ['', 'gpt-6-luna', 'gpt-5.6-terra', '__custom__']);
+	assert.equal(account[1].detail, 'elencato da codex');
+	// Un modello dell'account nascosto nelle impostazioni non si propone.
+	assert.ok(!optionsFor('codex', [model('codex:gpt-6-luna', 'custom', true)], ['gpt-6-luna']).some(o => o.id === 'gpt-6-luna'));
 	assert.deepEqual(optionsFor('constructor', []).map(o => o.id), ['', '__custom__']);
+});
+
+test('il sottomenu rilegge i modelli di codex a ogni apertura e tiene solo l\'ultima risposta', async () => {
+	// La rilettura parte da onOpen del menu, chiamato a ogni passaggio ad aperto (clic o tastiera).
+	assert.match(dropdown, /\n\t\t\t\tonOpen=\{reloadAccountModels\}\n/);
+	assert.match(inputs, /useEffect\(\(\) => \{\r?\n\t\tif \(isOpen\) onOpenRef\.current\?\.\(\);\r?\n\t\}, \[isOpen\]\);/);
+	const source = between(dropdown, '\tconst lastRequest = useRef(0)', '\n\n\t// Costruisci le opzioni');
+	const pending = [];
+	let state = [];
+	const cleanups = [];
+	const mount = agent => evaluate('useRef', 'useCallback', 'useEffect', 'agent', 'llmMessageService', 'setAccountModels',
+		js(source) + '; return { reloadAccountModels };'
+	)(value => ({ current: value }), fn => fn, fn => { cleanups.push(fn()); }, agent,
+		{ cliAgentModels: () => new Promise(resolve => pending.push(resolve)) },
+		update => { state = typeof update === 'function' ? update(state) : update; });
+	const settle = async (index, models) => { pending[index](models); await new Promise(resolve => setImmediate(resolve)); };
+	// Il montaggio legge subito la cache; l'apertura successiva vede la cache aggiornata da codex.
+	const { reloadAccountModels } = mount('codex');
+	assert.equal(pending.length, 1);
+	await settle(0, ['gpt-6-luna']);
+	assert.deepEqual(state, ['gpt-6-luna']);
+	reloadAccountModels();
+	await settle(1, ['gpt-6-luna', 'gpt-5.6-terra']);
+	assert.deepEqual(state, ['gpt-6-luna', 'gpt-5.6-terra']);
+	// Due aperture ravvicinate: la risposta vecchia che arriva dopo non sovrascrive quella nuova.
+	reloadAccountModels();
+	reloadAccountModels();
+	await settle(3, ['nuovo']);
+	await settle(2, ['vecchio']);
+	assert.deepEqual(state, ['nuovo']);
+	// Dopo lo smontaggio (la pulizia vera dello useEffect) una risposta in ritardo non cambia lo stato.
+	reloadAccountModels();
+	cleanups[0]();
+	await settle(4, ['dopo lo smontaggio']);
+	assert.deepEqual(state, ['nuovo']);
+	// Le altre IA non chiedono niente al processo principale, nemmeno al montaggio.
+	mount('claude').reloadAccountModels();
+	assert.equal(pending.length, 5);
+});
+
+test('menu: dopo un cambio delle opzioni la voce attiva resta la stessa', () => {
+	const { activeIndexAfterOptionsChange } = new Function(js(between(inputs, 'export const activeIndexAfterOptionsChange', 'export const VoxCustomDropdownBox')) + '; return { activeIndexAfterOptionsChange };')();
+	const equal = (a, b) => a === b;
+	const before = ['', 'gpt-6-luna', '__custom__'];
+	// Un modello inserito prima di quello evidenziato: l'indice segue la voce, non la posizione.
+	assert.equal(activeIndexAfterOptionsChange(1, before, ['', 'gpt-5.6-terra', 'gpt-6-luna', '__custom__'], 0, equal), 2);
+	// La voce evidenziata sparisce: si torna alla voce scelta.
+	assert.equal(activeIndexAfterOptionsChange(1, before, ['', '__custom__'], 0, equal), 0);
+	// Stesse opzioni: l'indice resta entro i limiti; nessuna opzione: nessun indice; nessun indice: la voce scelta.
+	assert.equal(activeIndexAfterOptionsChange(5, before, before, 0, equal), 2);
+	assert.equal(activeIndexAfterOptionsChange(1, before, [], 0, equal), -1);
+	assert.equal(activeIndexAfterOptionsChange(-1, before, before, 1, equal), 1);
 });
 
 const onboarding = await read('../../browser/react/src/vox-onboarding/VoxOnboarding.tsx');

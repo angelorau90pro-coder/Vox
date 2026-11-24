@@ -12,7 +12,6 @@ import { VOX_OPEN_SETTINGS_ACTION_ID } from '../../../voxSettingsPane.js'
 import { modelFilterOfFeatureName, ModelOption } from '../../../../../../../workbench/contrib/vox/common/voxSettingsService.js'
 import { WarningBox } from './WarningBox.js'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
-import { suggestedModelsOfCliAgent } from '../../../../../../../workbench/contrib/vox/common/modelCapabilities.js'
 import { Pencil } from 'lucide-react'
 
 const optionsEqual = (m1: ModelOption[], m2: ModelOption[]) => {
@@ -42,8 +41,26 @@ const CliAgentModelSelector = ({
 	className: string;
 }) => {
 	const settingsState = useSettingsState()
+	const llmMessageService = useAccessor().get('ILLMMessageService')
 	const [isEditing, setIsEditing] = useState(false)
 	const [customInput, setCustomInput] = useState('')
+	// Modelli che la CLI elenca per l'account (per ora codex, dalla sua cache): si rileggono al montaggio e a ogni apertura
+	// del menu (clic o tastiera), così una cache aggiornata da codex (per esempio dopo il primo invio o un cambio di account) compare senza
+	// riavviare Vox. Niente elenco fisso: un modello scritto nel codice può non valere per l'account (gpt-6.1-sol non c'è
+	// per gli account ChatGPT). Vale solo la risposta all'ultima richiesta, e niente dopo lo smontaggio.
+	const [accountModels, setAccountModels] = useState<string[]>([])
+	const lastRequest = useRef(0)
+	const reloadAccountModels = useCallback(() => {
+		if (agent !== 'codex') return
+		const request = ++lastRequest.current
+		llmMessageService.cliAgentModels(agent).then(models => {
+			if (request === lastRequest.current) setAccountModels(old => old.join('\n') === models.join('\n') ? old : models)
+		}, () => { })
+	}, [agent, llmMessageService])
+	useEffect(() => {
+		reloadAccountModels()
+		return () => { lastRequest.current++ }
+	}, [reloadAccountModels])
 
 	// Costruisci le opzioni del modello per questa IA
 	const options = useMemo<CliModelItem[]>(() => {
@@ -51,10 +68,8 @@ const CliAgentModelSelector = ({
 			{ id: '', name: t("Default"), detail: t("no --model") },
 		]
 
-		// Modelli suggeriti per questa specifica IA
-		const suggested = Object.hasOwn(suggestedModelsOfCliAgent, agent) ? suggestedModelsOfCliAgent[agent] : []
-		for (const m of suggested) {
-			items.push({ id: m, name: m, detail: t("suggested") })
+		for (const m of accountModels) {
+			if (m && m !== '__custom__' && !items.some(item => item.id === m)) items.push({ id: m, name: m, detail: t("listed by codex") })
 		}
 
 		// Eventuali modelli già salvati nelle impostazioni per questa IA (es. "codex:modello-custom")
@@ -78,7 +93,7 @@ const CliAgentModelSelector = ({
 		items.push({ id: '__custom__', name: t("Custom..."), detail: t("Enter manually") })
 
 		return items.filter(item => !cliModels.some(cm => cm.isHidden && cm.modelName === (item.id ? `${agent}:${item.id}` : agent)))
-	}, [agent, currentSubModel, settingsState.settingsOfProvider.cliAgent?.models])
+	}, [agent, accountModels, currentSubModel, settingsState.settingsOfProvider.cliAgent?.models])
 
 	const selectedOption = useMemo<CliModelItem>(() => {
 		return options.find(opt => opt.id === currentSubModel) || options[0]
@@ -139,6 +154,7 @@ const CliAgentModelSelector = ({
 			<VoxCustomDropdownBox
 				options={options}
 				selectedOption={selectedOption}
+				onOpen={reloadAccountModels}
 				onChangeOption={(opt) => {
 					if (opt.id === '__custom__') {
 						setCustomInput(currentSubModel)

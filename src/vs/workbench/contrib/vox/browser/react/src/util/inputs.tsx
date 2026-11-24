@@ -1269,10 +1269,25 @@ export const VoxCheckBox = ({ label, value, onClick, className }: { label: strin
 
 
 
+// Indice attivo del menu aperto dopo un cambio delle opzioni (per esempio un elenco riletto mentre il menu è aperto):
+// la voce attiva si ritrova per identità, così Invio sceglie quella che l'utente vedeva evidenziata e non quella finita
+// alla stessa posizione; se è sparita si torna alla voce scelta, altrimenti alla prima.
+export const activeIndexAfterOptionsChange = <T,>(prev: number, previousOptions: T[], options: T[], selectedIndex: number, equal: (a: T, b: T) => boolean): number => {
+	if (options.length === 0) return -1;
+	const fallback = selectedIndex >= 0 ? selectedIndex : 0;
+	if (prev < 0) return fallback;
+	if (previousOptions !== options && prev < previousOptions.length) {
+		const index = options.findIndex(option => equal(option, previousOptions[prev]));
+		return index >= 0 ? index : fallback;
+	}
+	return Math.min(prev, options.length - 1);
+};
+
 export const VoxCustomDropdownBox = <T extends NonNullable<any>>({
 	options,
 	selectedOption,
 	onChangeOption,
+	onOpen,
 	getOptionDropdownName,
 	getOptionDropdownDetail,
 	getOptionDisplayName,
@@ -1287,6 +1302,8 @@ export const VoxCustomDropdownBox = <T extends NonNullable<any>>({
 	options: T[];
 	selectedOption: T | undefined;
 	onChangeOption: (newValue: T) => void;
+	// Chiamata a ogni apertura del menu (clic o tastiera), per esempio per rileggere le opzioni.
+	onOpen?: () => void;
 	getOptionDropdownName: (option: T) => string;
 	getOptionDropdownDetail?: (option: T) => string;
 	getOptionDisplayName: (option: T) => string;
@@ -1365,19 +1382,21 @@ export const VoxCustomDropdownBox = <T extends NonNullable<any>>({
 		onChangeOption(options[0])
 	}, [selectedOption, onChangeOption, options])
 
-	// Mantiene l'indice attivo entro i limiti se le opzioni cambiano mentre il menu è aperto
+	// Avvisa a ogni passaggio da chiuso ad aperto, qualunque sia il modo (clic, frecce, floating-ui).
+	const onOpenRef = useRef(onOpen);
+	onOpenRef.current = onOpen;
 	useEffect(() => {
+		if (isOpen) onOpenRef.current?.();
+	}, [isOpen]);
+
+	// Se le opzioni cambiano mentre il menu è aperto, l'indice attivo resta sulla stessa voce ed entro i limiti.
+	const shownOptions = useRef(options);
+	useEffect(() => {
+		const previous = shownOptions.current;
+		shownOptions.current = options;
 		if (!isOpen) return;
-		if (options.length === 0) {
-			setActiveIndex(-1);
-			return;
-		}
-		setActiveIndex((prev) => {
-			if (prev < 0) return selectedIndex >= 0 ? selectedIndex : 0;
-			if (prev >= options.length) return options.length - 1;
-			return prev;
-		});
-	}, [isOpen, options.length, selectedIndex]);
+		setActiveIndex((prev) => activeIndexAfterOptionsChange(prev, previous, options, selectedIndex, getOptionsEqual));
+	}, [isOpen, options, selectedIndex, getOptionsEqual]);
 
 	useEffect(() => {
 		if (!isOpen || activeIndex < 0 || activeIndex >= options.length) return;

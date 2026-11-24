@@ -218,7 +218,7 @@ export const it: Record<string, string> = {
 	"Get Started": "Inizia",
 	"Default": "Predefinito",
 	"no --model": "nessun --model",
-	"suggested": "suggerito",
+	"listed by codex": "elencato da codex",
 	"configured": "configurato",
 	"custom": "personalizzato",
 	"Custom...": "Personalizzato...",
