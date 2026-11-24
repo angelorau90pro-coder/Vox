@@ -14,14 +14,14 @@ export const LOCAL_MODELS_NOT_CONFIGURED = 'VoxLocalNotConfigured';
 type Runtime = {
 	spawn: typeof spawn, execFile: typeof execFile, access: typeof access, readFile: typeof readFile,
 	mkdir: typeof mkdir, open: typeof open, fetch: typeof fetch,
-	homedir: typeof homedir, execPath: string, platform: string, now: () => number,
+	homedir: typeof homedir, execPath: string, platform: string, env: NodeJS.ProcessEnv | undefined, now: () => number,
 	setTimeout: typeof setTimeout, clearTimeout: typeof clearTimeout,
 	ioTimeout: number, logTimeout: number, probeTimeout: number, candidateTimeout: number, configuredTimeout: number, cacheDuration: number, missDuration: number,
 	switchTimeout: number, healthTimeout: number, healthInterval: number, closeTimeout: number, leaseTimeout: number
 };
 const runtime: Runtime = {
 	spawn, execFile, access, readFile, mkdir, open, fetch, homedir,
-	execPath: process.execPath, platform: process.platform, now: () => Date.now(),
+	execPath: process.execPath, platform: process.platform, env: process.env, now: () => Date.now(),
 	// una cartella non trovata si ricontrolla presto (l'utente può averla appena creata); quella scelta
 	// nelle impostazioni ha più tempo per rispondere (unità di rete, antivirus)
 	setTimeout, clearTimeout, ioTimeout: 10000, logTimeout: 2000, probeTimeout: 2000, candidateTimeout: 1500, configuredTimeout: 10000, cacheDuration: 60000, missDuration: 5000,
@@ -238,6 +238,13 @@ async function probe(url: string, rt: Runtime, signal?: AbortSignal): Promise<{ 
 		return { status: response.status, body };
 	} catch { return null } finally { rt.clearTimeout(timer); signal?.removeEventListener('abort', abort) }
 }
+
+// L'ambiente di Vox per llama-server, senza le variabili da cui legge le sue opzioni (`LLAMA_ARG_*`, `LLAMA_API_KEY`):
+// una chiave, HTTPS, un prefisso degli indirizzi o un altro modello impostati sul PC per un altro llama-server
+// renderebbero il modello irraggiungibile per Vox (o diverso da quello del manifesto). Le opzioni stanno solo in
+// modelli.json. Su Windows i nomi delle variabili non distinguono le maiuscole.
+const engineEnvironment = (env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv =>
+	Object.fromEntries(Object.entries(env ?? {}).filter(([name]) => !/^(LLAMA_ARG_|LLAMA_API_KEY$)/i.test(name)));
 
 const hasExited = (child: any) => child.exitCode != null || child.signalCode != null;
 
@@ -524,14 +531,16 @@ export class LocalModelManager {
 					// Nessun `await` fra questi controlli e `owned.set`: `shutdown` vede il processo oppure ne impedisce l'avvio.
 					if (signal?.aborted || this.closing || this.removing.has(nome)) { await log?.close(); throwIfAborted(signal); this.throwIfClosing(); this.throwIfRemoving(nome) }
 					let child: any;
-					try { child = this.rt.spawn(manifest.motore, args, { cwd: dirname(manifest.motore), shell: false, windowsHide: true, stdio: log ? ['ignore', log.fd, log.fd] : 'ignore' }) }
+					try { child = this.rt.spawn(manifest.motore, args, { cwd: dirname(manifest.motore), env: engineEnvironment(this.rt.env), shell: false, windowsHide: true, stdio: log ? ['ignore', log.fd, log.fd] : 'ignore' }) }
 					catch { await log?.close(); throw new Error(t('Unable to start local model {0}.', nome)) }
 					// il processo figlio ha già la sua copia del registro: Vox non tiene aperto il file
 					if (log) void Promise.resolve(log.close()).catch(() => { });
 					const item: OwnedModel = { child, nome, uso, firma, leases: 0 };
 					owned.set(model.porta, item);
 					child.once('close', () => { if (owned.get(model.porta)?.child === child) owned.delete(model.porta) });
-					child.once('error', (error: Error) => { child.spawnError = error; if (owned.get(model.porta)?.child === child) owned.delete(model.porta) });
+					// `on`, non `once`: un secondo 'error' senza ascoltatori (per esempio un `kill` non riuscito) farebbe cadere
+					// il processo principale di Vox; conta la prima causa
+					child.on('error', (error: Error) => { child.spawnError ??= error; if (owned.get(model.porta)?.child === child) owned.delete(model.porta) });
 					return await waitForReady(item);
 				} finally {
 					const item = owned.get(model.porta);

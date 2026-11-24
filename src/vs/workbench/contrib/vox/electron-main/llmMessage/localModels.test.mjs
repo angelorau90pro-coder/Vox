@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
-import * as path from 'node:path';
+import { win32 as path } from 'node:path';
 import { test } from 'node:test';
 import { evaluate } from '../../common/voxI18n.fixture.mjs';
 
 const source = stripTypeScriptTypes((await readFile(new URL('./localModels.ts', import.meta.url), 'utf8')).replace(/^import .*;\r?\n/gm, '')).replace(/export /g, '');
+// Il banco simula Windows (piattaforma predefinita 'win32', taskkill, unità C–Z): si usano sempre i percorsi win32,
+// anche quando i test girano su Linux o macOS, così prodotto e attese usano lo stesso modulo dei percorsi.
 const folder = path.resolve('local-model-fixture');
 const timer = (callback, ms) => setTimeout(callback, ms);
 const runtimeNames = ['spawn', 'execFile', 'access', 'readFile', 'mkdir', 'open', 'dirname', 'isAbsolute', 'join', 'resolve', 'relative', 'sep', 'homedir', 'process', 'fetch', 'setTimeout', 'clearTimeout'];
@@ -424,6 +426,27 @@ test('avvia con argomenti attesi, shell disabilitata, bind loopback e attende he
 	assert.deepEqual(h.spawns[0].args.map(value => value.replaceAll('/', '\\')), ['-m', path.join(folder, 'modelli', 'a.gguf'), '--alias', 'a', '-ngl', '99', '-c', '4096', '-fa', 'on', '-np', '1', '--jinja', '--host', '127.0.0.1', '--port', '8192', '--chat-template-file', path.join(folder, 'avvia', 'a.jinja')]);
 	assert.equal(h.spawns[0].options.shell, false); assert.equal(h.spawns[0].options.windowsHide, true); assert.equal(h.spawns[0].options.cwd, path.join(folder, 'motore'));
 	lease.release(); lease.release();
+});
+
+test('llama-server parte senza le variabili LLAMA_ARG_* e LLAMA_API_KEY del PC, con il resto dell\'ambiente', async () => {
+	const h = harness({ responses: [async () => null, async url => url.endsWith('/health') ? answer(200) : null] });
+	const env = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', LLAMA_API_KEY: 'segreta', llama_arg_ssl_key_file: 'k.pem', LLAMA_ARG_API_PREFIX: '/x', LLAMA_ARG_HF_REPO: 'altro/modello', LLAMA_CACHE: 'C:\\cache' };
+	const lease = await h.manager({ env }).acquire(folder, 'a');
+	assert.deepEqual(h.spawns[0].options.env, { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', LLAMA_CACHE: 'C:\\cache' });
+	// l'ambiente di Vox non cambia
+	assert.equal(env.LLAMA_API_KEY, 'segreta');
+	lease.release();
+});
+
+test('un secondo errore del processo avviato non fa cadere Vox (nessun errore senza ascoltatori)', async () => {
+	const h = harness({ responses: [async () => null, async url => url.endsWith('/health') ? answer(200) : null] });
+	const lease = await h.manager().acquire(folder, 'a');
+	const child = h.spawns[0].child;
+	child.emit('error', Error('kill non riuscito'));
+	child.emit('error', Error('ancora'));
+	assert.equal(child.spawnError.message, 'kill non riuscito');
+	assert.equal(h.owned.size, 0);
+	lease.release();
 });
 
 test('riusa server esterno dello stesso modello senza avviarlo o chiuderlo', async () => {

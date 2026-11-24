@@ -138,3 +138,38 @@ test('segno della domanda: non arriva a llama-server e protegge la domanda fusa 
 	assert.deepEqual(h.finals, [{ fullText: 'ok' }]);
 	assert.equal(h.releases, 1);
 });
+
+test('client di llama-server: nessun nuovo tentativo dell\'SDK, tempo lungo per leggere il prompt, errori di connessione spiegati', async () => {
+	const { default: OpenAI } = await import('openai');
+	const guard = await readFile(new URL('./providerGuard.ts', import.meta.url), 'utf8');
+	const sdk = source.slice(source.indexOf('const newVoxLocalSDK'), source.indexOf('const toOpenAICompatibleTool'));
+	const messages = source.slice(source.indexOf('const voxLocalErrorMessage'), source.indexOf('type CallFnOfProvider'));
+	assert.ok(sdk.length > 0 && messages.length > 0);
+	const { newVoxLocalSDK, voxLocalErrorMessage, VOX_LOCAL_REQUEST_TIMEOUT_MS } = evaluate('OpenAI', stripTypeScriptTypes(guard + sdk + messages).replace(/^export /gm, '') + '; return { newVoxLocalSDK, voxLocalErrorMessage, VOX_LOCAL_REQUEST_TIMEOUT_MS };')(OpenAI);
+	const client = newVoxLocalSDK({ voxLocalBaseURL: 'http://127.0.0.1:8192/v1' });
+	// un errore 500 o una connessione caduta si ripeterebbero uguali, rimandando tutto il prompt
+	assert.equal(client.maxRetries, 0);
+	assert.ok(VOX_LOCAL_REQUEST_TIMEOUT_MS > 10 * 60 * 1000);
+	assert.equal(client.timeout, VOX_LOCAL_REQUEST_TIMEOUT_MS);
+	assert.match(voxLocalErrorMessage(new OpenAI.APIConnectionError({ cause: new TypeError('fetch failed') })), /Il modello locale non ha risposto: potrebbe essersi fermato/);
+	assert.match(voxLocalErrorMessage(new TypeError('terminated')), /Il modello locale non ha risposto/);
+	assert.match(voxLocalErrorMessage(new OpenAI.APIConnectionTimeoutError()), /non ha cominciato a rispondere entro 60 minuti/);
+	// gli altri errori restano com'erano (l'errore di contesto si riconosce da `fullError`)
+	assert.equal(voxLocalErrorMessage(new Error('400 bad request')), 'Error: 400 bad request');
+});
+
+test('un server che non risponde davvero: un solo tentativo e messaggio chiaro', async () => {
+	const { default: OpenAI } = await import('openai');
+	const { createServer } = await import('node:http');
+	let hits = 0;
+	const server = createServer((request, response) => { hits++; response.writeHead(500, { 'Content-Type': 'application/json' }); response.end('{"error":{"code":500,"message":"template error","type":"server_error"}}') });
+	await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+	try {
+		const guard = await readFile(new URL('./providerGuard.ts', import.meta.url), 'utf8');
+		const sdk = source.slice(source.indexOf('const newVoxLocalSDK'), source.indexOf('const toOpenAICompatibleTool'));
+		const { newVoxLocalSDK } = evaluate('OpenAI', stripTypeScriptTypes(guard + sdk).replace(/^export /gm, '') + '; return { newVoxLocalSDK };')(OpenAI);
+		const client = newVoxLocalSDK({ voxLocalBaseURL: `http://127.0.0.1:${server.address().port}/v1` });
+		await assert.rejects(client.chat.completions.create({ model: 'a', messages: [{ role: 'user', content: 'x' }], stream: true }), error => error.status === 500);
+		assert.equal(hits, 1);
+	} finally { await new Promise(resolve => server.close(resolve)) }
+});

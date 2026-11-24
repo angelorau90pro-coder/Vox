@@ -346,6 +346,10 @@ export const extractXMLToolsWrapper = (
 		// treat like just got text before calling onFinalMessage (or else we sometimes miss the final chunk that's new to finalMessage)
 		newOnText({ ...params })
 
+		// VOX: il testo trattenuto perché poteva essere l'inizio di un tag (per esempio una risposta che finisce con «<»)
+		// a risposta finita è testo: senza questo la fine della risposta si perdeva
+		if (foundOpenTag === null && openToolTagBuffer) { fullText += openToolTagBuffer; openToolTagBuffer = '' }
+
 		fullText = fullText.trimEnd()
 		const toolCall = latestToolCall
 

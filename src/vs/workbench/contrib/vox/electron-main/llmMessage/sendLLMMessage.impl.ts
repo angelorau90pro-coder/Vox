@@ -54,6 +54,10 @@ export type ListParams_Internal<ModelResponse> = ModelListParams<ModelResponse>
 const newVoxLocalSDK = ({ includeInPayload, voxLocalBaseURL }: { includeInPayload?: { [s: string]: any }, voxLocalBaseURL?: string }) => {
 	const commonPayloadOpts: ClientOptions = {
 		dangerouslyAllowBrowser: true,
+		// nessun nuovo tentativo dell'SDK: con llama-server su questo PC un errore (modello di conversazione che fallisce,
+		// processo chiuso, tempo scaduto) si ripete uguale, e ogni tentativo rimanderebbe e rileggerebbe tutto il prompt
+		maxRetries: 0,
+		timeout: VOX_LOCAL_REQUEST_TIMEOUT_MS,
 		...includeInPayload,
 	}
 	if (!voxLocalBaseURL) throw new Error(t("The local model has not been started."))
@@ -63,6 +67,9 @@ const newVoxLocalSDK = ({ includeInPayload, voxLocalBaseURL }: { includeInPayloa
 	const localFetch = withoutRedirects(fetch) as unknown as ClientOptions['fetch']
 	return new OpenAI({ ...commonPayloadOpts, baseURL: voxLocalBaseURL, apiKey: 'vox-locale', fetch: localFetch })
 }
+// Tempo massimo prima che llama-server cominci a rispondere: la lettura di un prompt lungo su un PC senza scheda video
+// può superare i 10 minuti predefiniti dell'SDK. Lo Stop dell'utente vale sempre.
+const VOX_LOCAL_REQUEST_TIMEOUT_MS = 60 * 60 * 1000
 
 
 // VOX: la forma sta in common (openAICompatibleToolOf), perché il processo della finestra conti gli stessi caratteri
@@ -226,11 +233,19 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 		})
 		// when error/fail - this catches errors of both .create() and .then(for await)
 		.catch(error => {
-			onError({ message: error + '', fullError: error });
+			onError({ message: voxLocalErrorMessage(error), fullError: error });
 		})
 }
 
 
+
+// L'SDK riassume in inglese un llama-server che non risponde (processo chiuso o caduto, porta senza nessuno) e il
+// fetch di Node dice solo «fetch failed» o «terminated» (connessione chiusa a metà risposta): si dice cosa è successo.
+const voxLocalErrorMessage = (error: unknown): string => {
+	if (error instanceof OpenAI.APIConnectionTimeoutError) return t('The local model did not start answering within {0} minutes: the conversation may be too long for this PC. Start a new chat or reduce the context in Settings > Local AI > Installed models.', VOX_LOCAL_REQUEST_TIMEOUT_MS / 60000)
+	if (error instanceof OpenAI.APIConnectionError || (error instanceof TypeError && (error.message === 'fetch failed' || error.message === 'terminated'))) return t("The local model did not answer: it may have stopped. Try again, or check the local AI folder in Vox's Settings.")
+	return error + ''
+}
 
 type CallFnOfProvider = {
 	[providerName in ProviderName]: {

@@ -26,16 +26,19 @@ export function contextOverflowOf(error: unknown): ContextOverflow | null {
 		seen.add(value);
 		const record = value as Record<string, unknown>;
 		const promptTokens = positive(record.n_prompt_tokens), contextTokens = positive(record.n_ctx);
-		if (promptTokens && contextTokens && promptTokens > contextTokens) return { promptTokens, contextTokens };
+		// llama-server rifiuta già un prompt lungo quanto il contesto (`n_tokens >= n_ctx`): l'uguaglianza è un errore di contesto
+		if (promptTokens && contextTokens && promptTokens >= contextTokens) return { promptTokens, contextTokens };
 		return visit(record.error, depth + 1) ?? visit(record.body, depth + 1);
 	};
 	const structured = visit(error, 0);
 	if (structured) return structured;
 	const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-	const match = /request \((\d+) tokens\) exceeds the available context size \((\d+) tokens\)/i.exec(message);
+	// i due testi di llama-server: «request (N tokens) exceeds the available context size (M tokens)» e, per i
+	// prompt che non si possono dividere, «input (N tokens) is larger than the max context size (M tokens)»
+	const match = /(?:request|input) \((\d+) tokens\) (?:exceeds the available|is larger than the max) context size \((\d+) tokens\)/i.exec(message);
 	if (!match) return null;
 	const promptTokens = Number(match[1]), contextTokens = Number(match[2]);
-	return promptTokens > contextTokens ? { promptTokens, contextTokens } : null;
+	return promptTokens >= contextTokens && contextTokens > 0 ? { promptTokens, contextTokens } : null;
 }
 
 // Token da lasciare liberi per la risposta: un quarto del contesto, almeno 1024, mai più di metà.

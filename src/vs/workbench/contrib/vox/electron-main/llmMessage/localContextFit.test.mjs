@@ -19,6 +19,16 @@ test("riconosce l'errore di contesto di llama-server: corpo dell'APIError, corpo
 	assert.deepEqual(contextOverflowOf(new Error('400 request (5000 tokens) exceeds the available context size (4096 tokens), try increasing it')), { promptTokens: 5000, contextTokens: 4096 });
 });
 
+test('prompt lungo esattamente quanto il contesto: llama-server lo rifiuta (n_tokens >= n_ctx), è un errore di contesto', () => {
+	assert.deepEqual(contextOverflowOf({ error: { code: 400, type: 'exceed_context_size_error', n_prompt_tokens: 8192, n_ctx: 8192 } }), { promptTokens: 8192, contextTokens: 8192 });
+	assert.deepEqual(contextOverflowOf(new Error('400 request (4096 tokens) exceeds the available context size (4096 tokens), try increasing it')), { promptTokens: 4096, contextTokens: 4096 });
+	// l'altro testo di llama-server, per i prompt che non si possono dividere
+	assert.deepEqual(contextOverflowOf(new Error('400 input (5000 tokens) is larger than the max context size (4096 tokens). skipping')), { promptTokens: 5000, contextTokens: 4096 });
+	// e lo spazio per la risposta si libera comunque accorciando
+	const fit = shrinkToFit([{ role: 'system', content: 's' }, { role: 'user', content: long('a', 40000) }, { role: 'assistant', content: long('b', 40000) }, { role: 'user', content: 'domanda' }], { promptTokens: 8192, contextTokens: 8192 });
+	assert.ok(fit.removed > 0 && fit.fitted);
+});
+
 test('non scambia per errore di contesto gli altri errori', () => {
 	assert.equal(contextOverflowOf(null), null);
 	assert.equal(contextOverflowOf(new Error('fetch failed')), null);
