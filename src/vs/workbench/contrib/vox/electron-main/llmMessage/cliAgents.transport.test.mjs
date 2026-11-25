@@ -17,7 +17,7 @@ function harness({ spawnError = false, exitCode = 0, chunks } = {}) {
 		const child = new EventEmitter();
 		child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {};
 		child.stderr = new EventEmitter(); child.stderr.setEncoding = () => {};
-		child.stdin = new EventEmitter(); child.stdin.end = data => { child.input = data; };
+		child.stdin = new EventEmitter(); child.stdin.end = data => { child.input = data; child.stdin.writableFinished = true; };
 		calls.push({ command, args, options, child, files: new Map(files) });
 		queueMicrotask(() => {
 			for (const chunk of chunks ?? [args.includes('--json') ? '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' : options.env.OPENCODE_CONFIG_CONTENT ? '{"type":"text","part":{"text":"ok"}}' : 'ok']) child.stdout.emit('data', chunk);

@@ -8,7 +8,7 @@ import { spawn, execFile } from 'node:child_process';
 import { access, readFile, mkdtemp, open, realpath, stat, writeFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { constants as fsConstants } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 type AgentOptions = { model?: string; cwd: string; write?: boolean; profile?: string; stdin?: boolean; promptFile?: string };
 type CliAgent = { command: string; buildArgs: (prompt: string, options: AgentOptions) => string[]; parseOutput: (stdout: string) => string };
@@ -35,21 +35,26 @@ const opencodeAnswer = (stdout: string) => {
 	}
 	return last.join('\n\n');
 };
+// Come il filtro della documentazione di kimi (role assistant, content presente, nessun tool_calls): il testo che
+// accompagna una chiamata a strumento è un passo intermedio, non la risposta.
 const kimiAnswer = (stdout: string) => {
 	let last = '';
 	for (const event of events(stdout)) {
-		if (event?.role === 'assistant' && typeof event.content === 'string' && event.content.trim()) last = event.content.trim();
+		if (event?.role === 'assistant' && !(Array.isArray(event.tool_calls) && event.tool_calls.length) && typeof event.content === 'string' && event.content.trim()) last = event.content.trim();
 	}
 	return last;
 };
+// Si uniscono i text_delta dell'ultimo tratto di risposta dopo l'ultimo strumento (step_type «tool» o, in alcune
+// versioni, «tool_call»). Se non ce ne sono, vale la risposta dell'evento finale `result` (`result.response`).
 const agyAnswer = (stdout: string) => {
-	let answer = '';
+	let answer = '', result = '';
 	for (const event of events(stdout)) {
 		const step = event.step_update;
-		if (step?.step_type === 'tool') answer = '';
-		else if (step?.step_type === 'agent_response' && step.text_delta) answer += step.text_delta;
+		if (step?.step_type === 'tool' || step?.step_type === 'tool_call') answer = '';
+		else if (step?.step_type === 'agent_response' && typeof step.text_delta === 'string') answer += step.text_delta;
+		else if (typeof event.result?.response === 'string') result = event.result.response;
 	}
-	return answer.trim();
+	return answer.trim() || result.trim();
 };
 
 export const CLI_AGENTS = {
@@ -93,11 +98,31 @@ export const CLI_AGENTS = {
 export type CliAgentName = keyof typeof CLI_AGENTS;
 export const isCliAgentName = (agent: string): agent is CliAgentName => Object.prototype.hasOwnProperty.call(CLI_AGENTS, agent);
 
-const where = (command: string): Promise<string[]> => new Promise(resolvePaths => {
-	execFile(process.platform === 'win32' ? 'where.exe' : 'which', [command], { windowsHide: true, timeout: 5000 }, (error, stdout) => {
-		resolvePaths(error ? [] : stdout.trim().split(/\r?\n/).filter(Boolean));
-	});
-});
+// Cerca il comando nelle cartelle del PATH, come where.exe e which ma senza avviare processi. where.exe scrive i percorsi
+// nella code page OEM della console, non in UTF-8: un percorso con lettere accentate (C:\Users\Niccolò\AppData\...)
+// arriverebbe rovinato e la CLI risulterebbe non trovata; inoltre where.exe cerca prima nella cartella corrente.
+// Le cartelle relative del PATH si ignorano. Su Windows si provano il nome e le estensioni di PATHEXT (come where.exe,
+// che elenca anche il file senza estensione: il chiamante lo scarta), sugli altri sistemi solo i file eseguibili.
+// Come con where.exe, oltre 5 secondi (per esempio una cartella di rete irraggiungibile nel PATH) l'elenco è vuoto.
+const where = (command: string): Promise<string[]> => {
+	if (!command || /[\\/]/.test(command)) return Promise.resolve([]);
+	const windows = process.platform === 'win32';
+	const extensions = windows ? ['', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map(ext => ext.trim()).filter(ext => /^\.[^.\\/]+$/.test(ext))] : [''];
+	const dirs = [...new Set((process.env.PATH || '').split(delimiter).map(dir => dir.trim().replace(/^"(.*)"$/, '$1')).filter(dir => dir && isAbsolute(dir)))];
+	const usable = async (file: string) => {
+		try {
+			if ((await stat(file)).isDirectory()) return false;
+			if (!windows) await access(file, fsConstants.X_OK);
+			return true;
+		}
+		// Gli alias di esecuzione di Windows (WindowsApps) possono non dare stat: basta che il file sia accessibile.
+		catch { if (!windows) return false; try { await access(file); return true; } catch { return false; } }
+	};
+	const search = Promise.all(dirs.flatMap(dir => extensions.map(async ext => { const file = join(dir, command + ext); return await usable(file) ? [file] : []; })))
+		.then(found => found.flat());
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	return Promise.race([search, new Promise<string[]>(resolveEmpty => { timer = setTimeout(() => resolveEmpty([]), 5000); })]).finally(() => clearTimeout(timer));
+};
 
 // Riga di avvio di uno shim nativo: deve essere per intero «"%dp0%\...\x.exe" %*», quindi non conta dentro un echo,
 // una condizione su una riga o un commento; deve stare fuori da blocchi tra parentesi (IF ... ( ... )) e non seguire una
@@ -122,6 +147,8 @@ const nativeLaunch = (shim: string): string | undefined => {
 // Nessuna shell: gli shim npm .cmd sono risolti al loro entry point JavaScript.
 // Gli altri batch vengono rifiutati: cmd.exe non preserva in sicurezza prompt arbitrari.
 export const resolveCliCommand = async (command: string): Promise<{ command: string; args: string[] }> => {
+	// «Copia come percorso» di Esplora file aggiunge le virgolette: "C:\Program Files\...\codex.exe".
+	command = command.trim().replace(/^"(.+)"$/, '$1').trim();
 	const paths = isAbsolute(command) ? [command] : await where(command);
 	for (const path of paths) {
 		try {
@@ -330,7 +357,7 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 			const child = spawn(executable.command, args, { cwd, env, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
 			let stdout = '', ansiTail = '', outputLength = 0, finished = false;
 			const structured = agent === 'codex' || agent === 'opencode' || agent === 'kimi' || agent === 'agy';
-			let stopError: Error | undefined;
+			let stopError: Error | undefined, stdinFailed = false;
 			const finish = (error?: Error, answer?: string) => {
 				if (finished) return;
 				finished = true;
@@ -344,8 +371,10 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 				if (!child.pid) { finish(error); return; }
 				if (process.platform === 'win32') {
 					execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }, killError => {
-						const result = killError ? new Error(t("{0} Unable to terminate the process tree: check taskkill permissions.", error.message)) : error;
-						if (child.exitCode !== null || child.signalCode !== null) { finish(result); return; }
+						// Se la CLI è già uscita da sola, taskkill fallisce perché il processo non c'è più: non è un problema di permessi.
+						const exited = child.exitCode !== null || child.signalCode !== null;
+						const result = killError && !exited ? new Error(t("{0} Unable to terminate the process tree: check taskkill permissions.", error.message)) : error;
+						if (exited) { finish(result); return; }
 						child.once('close', () => finish(result));
 						child.kill();
 					});
@@ -377,11 +406,17 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 				stderrAll += chunk;
 				if (stderrAll.length > 1024 * 1024) { stderrAll = ''; stderrOverflow = true; }
 			});
+			// Un discendente della CLI (un server, un processo staccato, un albero che taskkill non ha chiuso) può tenere aperti
+			// stdout e stderr anche dopo l'uscita: 'close' non arriverebbe mai e la richiesta resterebbe appesa, anche dopo un
+			// timeout o un annullamento. Poco dopo l'uscita si chiudono i flussi; quello che il discendente scrive dopo si perde.
+			child.once('exit', () => { setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); }, 2000); });
 			child.on('error', () => finish(new Error(t("Unable to start CLI. Check path and installation."))));
 			child.on('close', code => {
 				if (finished) return;
 				if (stopError) { if (process.platform !== 'win32') finish(stopError); return; }
-				if (code !== 0) {
+				// L'errore di scrittura su stdin può arrivare dopo 'close': conta anche un prompt non scritto per intero.
+				if (code !== 0 || stdinFailed || (stdin && !child.stdin!.writableFinished)) {
+					if (code === 0) { finish(new Error(t("Unable to send prompt to CLI via stdin."))); return; }
 					// Il testo già mostrato da una CLI a testo resta nella chat come risposta: se la CLI fallisce (spesso scrive
 					// lì la causa), si sostituisce con la versione oscurata, così nella cronologia non restano segreti.
 					// Senza `ansiTail`: una sequenza ANSI rimasta a metà non va nella cronologia né nel messaggio.
@@ -397,12 +432,16 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 				finish(undefined, answer);
 			});
 			if (stdin) {
-				child.stdin!.on('error', () => stop(new Error(t("Unable to send prompt to CLI via stdin."))));
+				// Una CLI che esce subito (login mancante, flag sconosciuto) chiude stdin prima di leggerlo: l'EPIPE che segue non
+				// deve nascondere la causa vera, che si legge all'uscita. Con codice 0 il prompt non è arrivato per intero.
+				child.stdin!.on('error', () => { stdinFailed = true; });
 				child.stdin!.end(fullPrompt, 'utf8');
 			}
 			if (signal?.aborted) abort();
 		});
 	} finally {
-		if (profileDir) await rm(profileDir, { recursive: true, force: true });
+		// Su Windows un file appena scritto può restare aperto per poco (antivirus, indicizzazione, un discendente della
+		// CLI): si riprova, e una pulizia non riuscita non cambia l'esito della richiesta né nasconde la risposta.
+		if (profileDir) await rm(profileDir, { recursive: true, force: true, maxRetries: 3 }).catch(() => { });
 	}
 }

@@ -84,7 +84,8 @@ test('il servizio conserva il workspace esplicito e usa il primo locale solo com
 			voxSettingsService: { state: { settingsOfProvider: {} } }, mcpService: { getMCPTools: () => [] },
 			llmMessageHooks: { onText: {}, onFinalMessage: {}, onError: {}, onAbort: {} },
 			workspaceContextService: { getWorkspace: () => { lookups++; return { folders: [{ uri: { scheme: 'remote', fsPath: 'remoto' } }, { uri: { scheme: 'file', fsPath: 'locale' } }] }; } },
-			channel: { call: (_, value) => { forwarded = value; } },
+			// Come il canale IPC vero, call restituisce una promessa (il servizio ne intercetta il rifiuto).
+			channel: { call: (_, value) => { forwarded = value; return Promise.resolve(); } },
 		};
 		assert.equal(send.call(service, { modelSelection: { providerName: 'cliAgent', modelName: 'codex' }, workspaceFolder }), 'id');
 		assert.equal(forwarded.workspaceFolder, expected);

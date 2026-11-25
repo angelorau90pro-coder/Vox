@@ -120,3 +120,22 @@ if (mode === 'quota') {
 	process.stderr.write('altra riga\nError: Individual quota reached. Authorization: Bearer abc123SEGRETO token=ghp_ABCDEFGHIJKL1234\n');
 	process.exitCode = 1;
 }
+if (mode === 'orphan') {
+	// La CLI risponde ed esce, ma lascia un discendente staccato (altro gruppo di processi) che tiene aperto stdout.
+	const orphan = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true });
+	orphan.unref();
+	process.stdout.write(`${orphan.pid}\nrisposta completa`);
+}
+if (mode === 'noread' || mode === 'noread0') {
+	// Esce subito senza leggere il prompt da stdin (login mancante): la scrittura del prompt fallisce con EPIPE.
+	if (mode === 'noread') { process.stderr.write('Error: Not logged in · Please run /login\n'); process.exitCode = 1; }
+	else process.stdout.write('risposta senza prompt');
+	process.stdin.destroy();
+}
+if (mode === 'stdinecho') {
+	// Legge tutto il prompt da stdin e risponde con la sua lunghezza.
+	let length = 0;
+	process.stdin.setEncoding('utf8');
+	process.stdin.on('data', chunk => { length += chunk.length; });
+	process.stdin.on('end', () => process.stdout.write(`letti ${length}`));
+}

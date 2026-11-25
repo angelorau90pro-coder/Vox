@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, mkdir, writeFile, rm, rmdir, symlink } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 import { loadCliAgents } from '../../common/voxI18n.fixture.mjs';
 const { CLI_AGENTS, runCliAgent, resolveCliCommand, isCliAgentName, describeCliFailure, listCliAgentModels } = await loadCliAgents();
@@ -405,4 +406,86 @@ test('modelli di codex dell\'account dalla sua cache (models_cache.json)', async
 		if (savedHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedHome;
 		await rm(home, { recursive: true, force: true });
 	}
+});
+
+test('ricerca nel PATH senza where.exe/which: percorsi accentati, cartelle relative ignorate, percorso tra virgolette', async () => {
+	// where.exe scriveva i percorsi nella code page OEM: una cartella con lettere accentate rendeva la CLI «non trovata».
+	const temp = await mkdtemp(join(tmpdir(), 'vox-path-'));
+	const savedPath = process.env.PATH;
+	try {
+		const accented = join(temp, 'Niccolò àèìòù');
+		const other = join(temp, 'altra');
+		await mkdir(accented); await mkdir(other);
+		const name = 'cli-finta';
+		const binary = join(accented, process.platform === 'win32' ? `${name}.exe` : name);
+		await writeFile(binary, '#!/bin/sh\n', { mode: 0o755 });
+		// Una cartella con lo stesso nome e (fuori da Windows) un file non eseguibile non contano.
+		await mkdir(join(other, process.platform === 'win32' ? `${name}.exe` : name));
+		if (process.platform !== 'win32') { await mkdir(join(temp, 'noexec')); await writeFile(join(temp, 'noexec', name), '', { mode: 0o644 }); }
+		process.env.PATH = ['relativa', join(temp, 'noexec'), `"${other}"`, accented, accented].join(delimiter);
+		// Su Windows l'estensione arriva da PATHEXT (.EXE): il file system non distingue maiuscole e minuscole.
+		const found = await resolveCliCommand(name);
+		assert.deepEqual(process.platform === 'win32' ? { ...found, command: found.command.toLowerCase() } : found, { command: process.platform === 'win32' ? binary.toLowerCase() : binary, args: [] });
+		// Un nome con separatori non si cerca nel PATH (i percorsi relativi non sono supportati).
+		await assert.rejects(resolveCliCommand(join('Niccolò àèìòù', name)), /non trovata/);
+		// «Copia come percorso» di Esplora file mette il percorso tra virgolette.
+		assert.deepEqual(await resolveCliCommand(`  "${binary}" `), { command: binary, args: [] });
+		process.env.PATH = '';
+		await assert.rejects(resolveCliCommand(name), /non trovata/);
+	} finally {
+		process.env.PATH = savedPath;
+		await rm(temp, { recursive: true, force: true });
+	}
+});
+
+test('un discendente che tiene aperto stdout non blocca la risposta né il timeout', { skip: process.platform === 'win32' && 'su Windows il discendente staccato eredita la console, non la pipe' }, async () => {
+	CLI_AGENTS.copilot.buildArgs = fakeArgs('orphan');
+	let orphan;
+	try {
+		const started = Date.now();
+		const answer = await runFake({ timeoutMs: 20000, onText: text => { orphan ??= Number(text.split('\n')[0]); } });
+		assert.match(answer, /risposta completa$/);
+		assert.ok(Date.now() - started < 10000, 'la risposta arriva poco dopo l’uscita della CLI');
+	} finally {
+		CLI_AGENTS.copilot.buildArgs = originalArgs;
+		try { process.kill(orphan); } catch { }
+	}
+});
+
+test('stdin chiuso da una CLI che esce subito: si vede la causa vera, non l’errore di scrittura', async () => {
+	const original = CLI_AGENTS.claude.buildArgs;
+	const prompt = 'x'.repeat(2_000_000);
+	try {
+		CLI_AGENTS.claude.buildArgs = () => [fixture, 'noread'];
+		await assert.rejects(runCliAgent({ agent: 'claude', prompt, cwd: folder, command: process.execPath, onText: () => {} }), error => /Not logged in/.test(error.message) && !/stdin/.test(error.message));
+		// Una CLI che legge tutto stdin risponde normalmente.
+		CLI_AGENTS.claude.buildArgs = () => [fixture, 'stdinecho'];
+		const answer = await runCliAgent({ agent: 'claude', prompt, cwd: folder, command: process.execPath, onText: () => {} });
+		assert.ok(Number(answer.replace('letti ', '')) > prompt.length, answer);
+		// Con codice 0 il prompt non è arrivato per intero: errore, non una risposta a un prompt troncato.
+		CLI_AGENTS.claude.buildArgs = () => [fixture, 'noread0'];
+		await assert.rejects(runCliAgent({ agent: 'claude', prompt, cwd: folder, command: process.execPath, onText: () => {} }), /stdin/);
+	} finally { CLI_AGENTS.claude.buildArgs = original; }
+});
+
+test('parser kimi e agy: testo con tool_calls, step tool_call e result.response', () => {
+	// kimi: il testo che accompagna una chiamata a strumento non è la risposta (filtro della documentazione di kimi).
+	assert.equal(CLI_AGENTS.kimi.parseOutput([
+		{ role: 'meta', type: 'system.version', version: '2.7.3' },
+		{ role: 'assistant', content: 'finale' },
+		{ role: 'assistant', content: 'Ora leggo il file', tool_calls: [{ type: 'function', id: '1', function: { name: 'Read', arguments: '{}' } }] },
+		{ role: 'tool', tool_call_id: '1', content: 'nascosto' },
+		{ role: 'meta', type: 'session.resume_hint', session_id: 's', command: 'kimi -r s', content: 'To resume this session: kimi -r s' },
+	].map(event => JSON.stringify(event)).join('\r\n')), 'finale');
+	// agy: «tool_call» azzera come «tool»; senza text_delta vale result.response; righe con CRLF.
+	assert.equal(CLI_AGENTS.agy.parseOutput([
+		{ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'Leggo ' } },
+		{ event: 'step_update', step_update: { step_type: 'tool_call', tool_name: 'view_file' } },
+		{ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'fin' } },
+		{ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'ale' } },
+		{ event: 'result', result: { status: 'SUCCESS', response: 'Leggo finale' } },
+	].map(event => JSON.stringify(event)).join('\r\n')), 'finale');
+	assert.equal(CLI_AGENTS.agy.parseOutput(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: ' solo risultato ' } })), 'solo risultato');
+	// codex con righe CRLF (Windows).
+	assert.equal(CLI_AGENTS.codex.parseOutput('{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"ok"}}\r\n{"type":"turn.completed","usage":{}}\r\n'), 'ok');
 });
