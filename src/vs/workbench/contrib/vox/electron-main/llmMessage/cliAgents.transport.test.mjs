@@ -1,7 +1,9 @@
 import { evaluate } from '../../common/voxI18n.fixture.mjs';
 // Verifica il trasporto senza avviare processi o usare account esterni.
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile, rm, realpath, open } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { constants as fsConstants } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { EventEmitter } from 'node:events';
 import * as path from 'node:path';
@@ -10,7 +12,9 @@ import { test } from 'node:test';
 const source = stripTypeScriptTypes((await readFile(new URL(process.argv[2] || './cliAgents.ts', import.meta.url), 'utf8')).replace(/^import .*;\r?\n/gm, '')).replace(/export /g, '');
 const cwd = path.dirname(new URL(import.meta.url).pathname);
 const prompt = '\u00e0\u{1f600} "\\ & | %PATH% !VAR! '.repeat(5000);
-function harness({ spawnError = false, exitCode = 0, chunks } = {}) {
+// `realFs`: realpath e open veri, per riconoscere la versione della CLI da file installati in una cartella temporanea
+// (lo spawn resta finto); altrimenti nessun file si trova e valgono i flag predefiniti.
+function harness({ spawnError = false, exitCode = 0, chunks, stderr, realFs = false } = {}) {
 	const files = new Map(), removed = [], calls = [];
 	const spawn = (command, args, options) => {
 		if (spawnError) throw new Error('avvio fallito');
@@ -21,12 +25,14 @@ function harness({ spawnError = false, exitCode = 0, chunks } = {}) {
 		calls.push({ command, args, options, child, files: new Map(files) });
 		queueMicrotask(() => {
 			for (const chunk of chunks ?? [args.includes('--json') ? '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' : options.env.OPENCODE_CONFIG_CONTENT ? '{"type":"text","part":{"text":"ok"}}' : 'ok']) child.stdout.emit('data', chunk);
+			if (stderr) child.stderr.emit('data', stderr);
 			child.emit('close', exitCode);
 		});
 		return child;
 	};
-	const names = ['spawn', 'execFile', 'access', 'readFile', 'mkdtemp', 'writeFile', 'rm', 'homedir', 'tmpdir', 'dirname', 'isAbsolute', 'join', 'resolve'];
-	const values = [spawn, assert.fail, async () => {}, assert.fail, async () => path.join(cwd, 'temp-finto'), async (name, value) => { files.set(name, value); }, async name => { removed.push(name); files.clear(); }, () => cwd, () => cwd, path.dirname, path.isAbsolute, path.join, path.resolve];
+	const missing = async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+	const names = ['spawn', 'execFile', 'access', 'readFile', 'mkdtemp', 'writeFile', 'rm', 'homedir', 'tmpdir', 'dirname', 'isAbsolute', 'join', 'resolve', 'realpath', 'open', 'fsConstants'];
+	const values = [spawn, assert.fail, async () => {}, assert.fail, async () => path.join(cwd, 'temp-finto'), async (name, value) => { files.set(name, value); }, async name => { removed.push(name); files.clear(); }, () => cwd, () => cwd, path.dirname, path.isAbsolute, path.join, path.resolve, realFs ? realpath : missing, realFs ? open : missing, fsConstants];
 	return { ...evaluate(...names, source + '; return { runCliAgent, CLI_AGENTS };')(...values), calls, files, removed };
 }
 const run = (h, agent, options = {}) => h.runCliAgent({ agent, prompt, cwd, command: process.execPath, onText() {}, ...options });
@@ -157,4 +163,100 @@ test('Copilot oltre il limite dei comandi viene rifiutato e non parte in modo in
 	const lungo = 'x'.repeat(40000);
 	await assert.rejects(() => run(h, 'copilot', { prompt: lungo }), /troppo lunghi/);
 	assert.equal(h.calls.length, 0);
+});
+
+// Installazione npm finta in una cartella temporanea: <radice>/node_modules/<nome>/package.json e il file del comando.
+async function npmLayout(name, version, bin, content = 'binario finto') {
+	const root = await mkdtemp(path.join(tmpdir(), 'vox-cli-layout-'));
+	const dir = path.join(root, 'node_modules', ...name.split('/'));
+	const file = path.join(dir, ...bin.split('/'));
+	await mkdir(path.dirname(file), { recursive: true });
+	await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name, version }));
+	await writeFile(file, content);
+	return { root, file };
+}
+// Ultima regola di OpenCode 2.x che corrisponde (come Permission.evaluate: «*» vale qualunque testo, anche con «/»).
+const lastRule = (rules, action, resource) => rules.findLast(rule => (rule.action === '*' || rule.action === action)
+	&& new RegExp('^' + rule.resource.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 's').test(resource))?.effect;
+
+test('OpenCode 2.x riconosciuto dal package.json: server privato, cartella in PWD, regole native, niente --pure né --dir', async () => {
+	const { root, file } = await npmLayout('@opencode/cli', '2.4.1', 'bin/opencode.exe');
+	try {
+		for (const write of [false, true]) {
+			const h = harness({ realFs: true });
+			assert.equal(await run(h, 'opencode', { command: file, write, model: 'anthropic/claude-sonnet' }), 'ok');
+			const { args, options } = h.calls[0];
+			const promptFile = args[args.indexOf('-f') + 1];
+			assert.deepEqual(args, ['run', '--standalone', '--format', 'json', '--agent', 'vox', '-m', 'anthropic/claude-sonnet', '-f', promptFile, '--', 'Segui le istruzioni allegate.']);
+			assert.equal(options.cwd, cwd);
+			assert.equal(options.env.PWD, cwd);
+			assert.equal(options.stdio[0], 'ignore');
+			for (const name of ['OPENCODE_CONFIG_PROJECT_DISABLE', 'OPENCODE_DISABLE_PROJECT_CONFIG', 'OPENCODE_DISABLE_CLAUDE_CODE', 'OPENCODE_DISABLE_AUTOUPDATE']) assert.equal(options.env[name], '1', name);
+			const config = JSON.parse(options.env.OPENCODE_CONFIG_CONTENT);
+			assert.equal(config.agent, undefined);
+			assert.deepEqual([config.update, config.share, config.formatter, config.lsp], ['disable', 'disabled', false, false]);
+			const rules = config.agents.vox.permissions;
+			assert.deepEqual(rules[0], { action: '*', resource: '*', effect: 'deny' });
+			assert.equal(lastRule(rules, 'read', 'src/main.ts'), 'allow');
+			assert.equal(lastRule(rules, 'read', '.env'), 'deny');
+			assert.equal(lastRule(rules, 'read', 'config/.env.local'), 'deny');
+			assert.equal(lastRule(rules, 'glob', '**/*.ts'), 'allow');
+			assert.equal(lastRule(rules, 'edit', 'src/main.ts'), write ? 'allow' : 'deny');
+			for (const action of ['shell', 'webfetch', 'websearch', 'external_directory', 'subagent', 'execute', 'skill', 'question', 'mcp_tool']) assert.equal(lastRule(rules, action, '*'), 'deny', action);
+		}
+		// senza workspace la home, in sola lettura
+		const home = harness({ realFs: true });
+		await run(home, 'opencode', { command: file, prompt: 'breve', write: true, cwd: undefined });
+		assert.equal(home.calls[0].options.env.PWD, cwd);
+		assert.equal(lastRule(JSON.parse(home.calls[0].options.env.OPENCODE_CONFIG_CONTENT).agents.vox.permissions, 'edit', 'a.ts'), 'deny');
+		assert.deepEqual(home.calls[0].args.slice(-2), ['--', home.calls[0].args.at(-1)]);
+		assert.ok(home.calls[0].args.at(-1).endsWith('breve'));
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('OpenCode 1.x (opencode-ai) e installazione non riconosciuta: flag di opencode-ai 1.x', async () => {
+	const { root, file } = await npmLayout('opencode-ai', '1.19.6', 'bin/opencode.exe');
+	const unknown = await mkdtemp(path.join(tmpdir(), 'vox-cli-layout-'));
+	try {
+		const brew = path.join(unknown, 'opencode.exe');
+		await writeFile(brew, 'binario finto');
+		for (const command of [file, brew]) {
+			const h = harness({ realFs: true });
+			await run(h, 'opencode', { command, prompt: 'breve' });
+			const { args, options } = h.calls[0];
+			assert.deepEqual(args.slice(0, 8), ['run', '--pure', '--format', 'json', '--agent', 'vox', '--dir', cwd]);
+			assert.ok(!args.includes('--standalone'));
+			const config = JSON.parse(options.env.OPENCODE_CONFIG_CONTENT);
+			assert.equal(config.agent.vox.permission['*'], 'deny');
+			assert.equal(config.agents, undefined);
+		}
+	} finally { await rm(root, { recursive: true, force: true }); await rm(unknown, { recursive: true, force: true }); }
+});
+
+test('un flag sconosciuto aggiunge un suggerimento sulla versione; senza flag sconosciuti il messaggio resta quello di prima', async () => {
+	const pure = harness({ exitCode: 1, stderr: 'Unrecognized flag: --pure in command opencode run\n' });
+	await assert.rejects(run(pure, 'opencode', { prompt: 'breve' }), error => /terminata con errore/.test(error.message) && /Vox non ha riconosciuto la versione di OpenCode installata/.test(error.message));
+	const kimi = harness({ exitCode: 2, stderr: "Usage: kimi [OPTIONS]\nError: No such option: --agent-file\n" });
+	await assert.rejects(run(kimi, 'kimi', { prompt: 'breve' }), error => error.message.includes('No such option: --agent-file') && error.message.includes('La versione installata di kimi potrebbe non supportare le opzioni usate da Vox'));
+	const { root, file } = await npmLayout('@opencode/cli', '3.0.0', 'bin/opencode.exe');
+	try {
+		const future = harness({ realFs: true, exitCode: 1, stderr: 'Unrecognized flag: --standalone in command opencode run\n' });
+		await assert.rejects(run(future, 'opencode', { command: file, prompt: 'breve' }), error => error.message.includes('La versione installata di opencode potrebbe') && !error.message.includes('opencode-ai 1.x'));
+	} finally { await rm(root, { recursive: true, force: true }); }
+	const quota = harness({ exitCode: 1, stderr: 'Error: quota reached\n' });
+	await assert.rejects(run(quota, 'opencode', { prompt: 'breve' }), error => error.message === 'La CLI opencode è terminata con errore: Error: quota reached');
+});
+
+test('la vecchia kimi-cli in Python viene rifiutata prima di scrivere profili o avviare processi', async () => {
+	const root = await mkdtemp(path.join(tmpdir(), 'vox-cli-layout-'));
+	try {
+		const file = path.join(root, 'uv', 'tools', 'kimi-cli', 'bin', process.platform === 'win32' ? 'kimi.exe' : 'kimi');
+		await mkdir(path.dirname(file), { recursive: true });
+		await writeFile(file, `#!${path.join(path.dirname(file), 'python')}\n# -*- coding: utf-8 -*-\nimport sys\nfrom kimi_cli.__main__ import main\nif __name__ == "__main__":\n    sys.exit(main())\n`);
+		const h = harness({ realFs: true });
+		await assert.rejects(run(h, 'kimi', { command: file, prompt: 'breve' }), /vecchia Kimi CLI in Python \(kimi-cli\).*@moonshot-ai\/kimi-code/);
+		assert.equal(h.calls.length, 0);
+		assert.equal(h.files.size, 0);
+		assert.equal(h.removed.length, 0);
+	} finally { await rm(root, { recursive: true, force: true }); }
 });

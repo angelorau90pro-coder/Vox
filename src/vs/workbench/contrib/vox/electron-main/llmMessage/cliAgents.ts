@@ -10,7 +10,10 @@ import { homedir, tmpdir } from 'node:os';
 import { constants as fsConstants } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
-type AgentOptions = { model?: string; cwd: string; write?: boolean; profile?: string; stdin?: boolean; promptFile?: string };
+// Variante della CLI riconosciuta dai file installati (detectCliVariant): OpenCode 2.x (@opencode/cli) o la vecchia kimi-cli
+// in Python. Senza variante valgono i flag di opencode-ai 1.x e di Kimi Code.
+export type CliVariant = 'opencode2' | 'kimiPython';
+type AgentOptions = { model?: string; cwd: string; write?: boolean; profile?: string; stdin?: boolean; promptFile?: string; variant?: CliVariant };
 type CliAgent = { command: string; buildArgs: (prompt: string, options: AgentOptions) => string[]; parseOutput: (stdout: string) => string };
 const modelArgs = (model?: string, flag = '--model') => model ? [flag, model] : [];
 const clean = (stdout: string) => stdout.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim();
@@ -80,7 +83,9 @@ export const CLI_AGENTS = {
 	},
 	opencode: {
 		command: 'opencode',
-		buildArgs: (prompt, { model, cwd, promptFile }) => ['run', '--pure', '--format', 'json', '--agent', 'vox', '--dir', cwd, ...modelArgs(model, '-m'), ...(promptFile ? ['-f', promptFile] : []), '--', promptFile ? 'Segui le istruzioni allegate.' : prompt],
+		// 2.x (@opencode/cli) non ha --pure né --dir: la cartella è PWD (la imposta runCliAgent) e --standalone avvia un server
+		// privato che eredita l'ambiente con la configurazione di Vox, invece di usare il servizio in background già avviato.
+		buildArgs: (prompt, { model, cwd, promptFile, variant }) => ['run', ...(variant === 'opencode2' ? ['--standalone'] : ['--pure']), '--format', 'json', '--agent', 'vox', ...(variant === 'opencode2' ? [] : ['--dir', cwd]), ...modelArgs(model, '-m'), ...(promptFile ? ['-f', promptFile] : []), '--', promptFile ? 'Segui le istruzioni allegate.' : prompt],
 		parseOutput: opencodeAnswer,
 	},
 	kimi: {
@@ -196,6 +201,61 @@ export const listCliAgents = async (commands: Partial<Record<`${CliAgentName}Com
 	}));
 	return found.filter((agent): agent is CliAgentName => agent !== null);
 };
+
+// Primi `limit` byte di un file regolare; su POSIX l'apertura non bloccante evita di fermarsi su una pipe.
+const readHead = async (file: string, limit: number): Promise<Buffer> => {
+	const handle = await open(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+	try {
+		if (!(await handle.stat()).isFile()) return Buffer.alloc(0);
+		const buffer = Buffer.alloc(limit);
+		let total = 0;
+		while (total < limit) {
+			const { bytesRead } = await handle.read(buffer, total, limit - total, total);
+			if (bytesRead === 0) break;
+			total += bytesRead;
+		}
+		return buffer.subarray(0, total);
+	} finally { await handle.close(); }
+};
+
+// Il package.json più vicino sopra il file vero del comando (bin/opencode.exe, dist/main.mjs), al massimo tre cartelle
+// sopra: nome e versione del pacchetto npm a cui appartiene. Un package.json illeggibile o senza nome non identifica nulla.
+const npmPackageOf = async (file: string): Promise<{ name: string; version: string } | undefined> => {
+	let dir = dirname(file);
+	for (let level = 0; level < 3; level++) {
+		try {
+			const info = JSON.parse((await readHead(join(dir, 'package.json'), 64 * 1024)).toString('utf8'));
+			return typeof info?.name === 'string' && typeof info.version === 'string' ? { name: info.name, version: info.version } : undefined;
+		} catch (error) { if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') return undefined; }
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return undefined;
+};
+
+// Riconosce la CLI dai file installati, senza avviarla. Si segue il percorso vero (realpath): il comando nel PATH è di
+// solito un collegamento dentro node_modules (su Windows resolveCliCommand ha già risolto lo shim npm all'.exe o allo
+// script). OpenCode: @opencode/cli (o un futuro opencode-ai 2.x) è la 2.x; altrimenti, anche se non si riconosce nulla
+// (Homebrew, script di installazione), valgono i flag di opencode-ai 1.x. Kimi: fuori dal pacchetto npm di Kimi Code, un
+// file che nei primi byte nomina «kimi_cli» (lo script Python con shebang, o il launcher .exe di pip/uv con lo script in
+// coda) è la vecchia kimi-cli in Python: lo stesso controllo che fa l'installazione di Kimi Code
+// (apps/kimi-code/scripts/postinstall/migrate.mjs, 4 KiB su POSIX e 256 KiB su Windows).
+export const detectCliVariant = async (agent: string, executable: { command: string; args: string[] }): Promise<CliVariant | undefined> => {
+	if (agent !== 'opencode' && agent !== 'kimi') return undefined;
+	try {
+		const file = await realpath(executable.args[0] ?? executable.command);
+		const info = await npmPackageOf(file);
+		if (agent === 'opencode') return info && (info.name === '@opencode/cli' || (info.name === 'opencode-ai' && Number.parseInt(info.version, 10) >= 2)) ? 'opencode2' : undefined;
+		if (info?.name === '@moonshot-ai/kimi-code') return undefined;
+		const head = await readHead(file, process.platform === 'win32' ? 256 * 1024 : 4096);
+		return head.toString('latin1').includes('kimi_cli') ? 'kimiPython' : undefined;
+	} catch { return undefined; }
+};
+
+// Errore di un flag che la CLI non conosce (effect/cli, commander, click/typer, clap): la versione installata può non
+// essere quella per cui Vox costruisce gli argomenti.
+const UNKNOWN_OPTION = /unrecogni[sz]ed (?:flag|option|argument)|unknown (?:option|flag|argument)|no such option|unexpected argument/i;
 
 // Modelli che la CLI elenca per l'account dell'utente, da proporre nel sottomenu. Per ora solo codex, che tiene l'elenco
 // in models_cache.json (in CODEX_HOME o in ~/.codex): si prendono i modelli visibili ("list") in ordine di priorità
@@ -319,6 +379,10 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 	const aborted = () => new Error(t("CLI request canceled."));
 	if (signal?.aborted) throw aborted();
 	const executable = await resolveCliCommand(command?.trim() || CLI_AGENTS[agent].command);
+	const variant = await detectCliVariant(agent, executable);
+	// La kimi-cli in Python (archiviata) con --print approva da sola ogni strumento e aggiunge quelli di MCP e plugin a quelli
+	// del profilo, che inoltre deve essere YAML: non si può limitare alla lettura, quindi non si avvia.
+	if (variant === 'kimiPython') throw new Error(t("The installed kimi command is the old Python Kimi CLI (kimi-cli), which is archived and not supported: Vox cannot limit its tools. Install Kimi Code (npm install -g @moonshot-ai/kimi-code) or set the path of its kimi command in Settings."));
 	const env: NodeJS.ProcessEnv = { ...process.env, KIMI_CODE_NO_AUTO_UPDATE: '1' };
 	// Solo se manca un node di sistema si usa l'eseguibile dell'app (Electron), che per fare da Node vuole questa variabile.
 	if (executable.command === process.execPath) env.ELECTRON_RUN_AS_NODE = '1';
@@ -337,6 +401,20 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 				OPENCODE_CONFIG_CONTENT: JSON.stringify({ autoupdate: false, share: 'disabled', agent: { vox: { description: 'Vox', mode: 'primary', permission: { '*': 'deny', read: { '*': 'allow', '*.env': 'deny', '*.env.*': 'deny' }, glob: 'allow', grep: 'allow', list: 'allow', ...(write ? { edit: 'allow', write: 'allow' } : {}) } } } }),
 				OPENCODE_DISABLE_PROJECT_CONFIG: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_AUTOUPDATE: '1', OPENCODE_DISABLE_SHARE: '1', OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
 			});
+			// 2.x: regole native (l'ultima che corrisponde vale, e un divieto della configurazione non si supera con approvazioni
+			// salvate né con l'hook permission.evaluate dei plugin); un'azione negata per intero toglie anche lo strumento (shell,
+			// web, MCP, subagenti, Code Mode). Le letture fuori dalla cartella chiedono anche external_directory, negato da «*». Niente formattatori
+			// né LSP dopo le modifiche: sono comandi esterni. OPENCODE_CONFIG_PROJECT_DISABLE ha la precedenza sull'altra
+			// variabile, quindi si impostano tutte e due. La cartella di lavoro di `run` è PWD, poi la cartella corrente.
+			if (variant === 'opencode2') Object.assign(env, {
+				OPENCODE_CONFIG_CONTENT: JSON.stringify({ update: 'disable', share: 'disabled', formatter: false, lsp: false, agents: { vox: { description: 'Vox', mode: 'primary', permissions: [
+					{ action: '*', resource: '*', effect: 'deny' },
+					{ action: 'read', resource: '*', effect: 'allow' }, { action: 'read', resource: '*.env', effect: 'deny' }, { action: 'read', resource: '*.env.*', effect: 'deny' },
+					{ action: 'glob', resource: '*', effect: 'allow' }, { action: 'grep', resource: '*', effect: 'allow' },
+					...(write ? [{ action: 'edit', resource: '*', effect: 'allow' }] : []),
+				] } } }),
+				OPENCODE_CONFIG_PROJECT_DISABLE: '1', PWD: cwd,
+			});
 		}
 		const policy = `Opera solo nella cartella ${cwd}. Non aprire file .env, chiavi private o credenziali. Non usare strumenti MCP o web. ${write ? 'Modifica file solo nella cartella di lavoro.' : 'Leggi soltanto: non modificare file.'} Non eseguire comandi di terminale. Usa i tuoi strumenti; rispondi con testo, senza chiamate a strumenti Vox.\n\n`;
 		const fullPrompt = policy + (agent === 'agy' ? 'Never run terminal commands: use only your file viewing, directory listing and search tools.\n\n' : '') + prompt;
@@ -348,7 +426,7 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 			promptFile = join(profileDir, 'prompt.md');
 			await writeFile(promptFile, fullPrompt, { encoding: 'utf8', mode: 0o600 });
 		}
-		const args = [...executable.args, ...CLI_AGENTS[agent].buildArgs(fullPrompt, { model, cwd, write, profile, stdin, promptFile })];
+		const args = [...executable.args, ...CLI_AGENTS[agent].buildArgs(fullPrompt, { model, cwd, write, profile, stdin, promptFile, variant })];
 		// Margine per quoting, percorso eseguibile e terminatore rispetto al limite CreateProcess.
 		const commandLength = executable.command.length + args.reduce((length, arg) => length + arg.length + (arg.match(/[\\"]/g)?.length ?? 0) + 3, 1);
 		if (commandLength > 30000) throw new Error(t("CLI prompt or arguments too long for {0} (Windows limit). Reduce history or choose a CLI with stdin/file input.", agent));
@@ -421,7 +499,12 @@ export async function runCliAgent({ agent, model, prompt, cwd: workspaceFolder, 
 					// lì la causa), si sostituisce con la versione oscurata, così nella cronologia non restano segreti.
 					// Senza `ansiTail`: una sequenza ANSI rimasta a metà non va nella cronologia né nel messaggio.
 					if (!structured && stdout) onText(redactSecrets(stdout.trim()));
-					finish(new Error(describeCliFailure(agent, stderrAll, stdout, structured ? jsonFailure(stdout) : NO_JSON_FAILURE))); return;
+					const described = describeCliFailure(agent, stderrAll, stdout, structured ? jsonFailure(stdout) : NO_JSON_FAILURE);
+					// Un flag sconosciuto (scritto su stderr) indica una versione diversa da quella attesa: si aggiunge come procedere.
+					const hint = !UNKNOWN_OPTION.test(stderrAll) ? '' : agent === 'opencode' && !variant
+						? t("Vox could not recognize the installed OpenCode version and used the options of opencode-ai 1.x: if you have OpenCode 2.x, install it with npm (@opencode/cli) or set the path of the command installed by npm in Settings.")
+						: t("The installed {0} may not support the options used by Vox: check its version in the CLI AI documentation.", agent);
+					finish(new Error(hint ? `${described} ${hint}` : described)); return;
 				}
 				const answer = structured ? CLI_AGENTS[agent].parseOutput(stdout) : (stdout + ansiTail).trim();
 				const failure = structured ? jsonFailure(stdout) : NO_JSON_FAILURE;

@@ -139,3 +139,8 @@ if (mode === 'stdinecho') {
 	process.stdin.on('data', chunk => { length += chunk.length; });
 	process.stdin.on('end', () => process.stdout.write(`letti ${length}`));
 }
+if (mode === 'run') {
+	// Come `opencode run --format json`: un evento text con gli argomenti, PWD, la cartella corrente e la configurazione ricevuti.
+	const received = { args: process.argv.slice(2), pwd: process.env.PWD, cwd: process.cwd(), config: JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || 'null') };
+	process.stdout.write(JSON.stringify({ type: 'step_start', part: {} }) + '\n' + JSON.stringify({ type: 'text', part: { text: JSON.stringify(received) } }) + '\n');
+}

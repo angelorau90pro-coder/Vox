@@ -1,13 +1,13 @@
 // Eseguire con Node >= 22.18: node --test src/vs/workbench/contrib/vox/electron-main/llmMessage/cliAgents.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, rm, rmdir, symlink } from 'node:fs/promises';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { mkdtemp, mkdir, writeFile, rm, rmdir, symlink, chmod } from 'node:fs/promises';
 import { basename, delimiter, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 import { loadCliAgents } from '../../common/voxI18n.fixture.mjs';
-const { CLI_AGENTS, runCliAgent, resolveCliCommand, isCliAgentName, describeCliFailure, listCliAgentModels } = await loadCliAgents();
+const { CLI_AGENTS, runCliAgent, resolveCliCommand, isCliAgentName, describeCliFailure, listCliAgentModels, detectCliVariant } = await loadCliAgents();
 
 const folder = dirname(fileURLToPath(import.meta.url));
 const fixture = fileURLToPath(new URL('./cliAgents.fixture.mjs', import.meta.url));
@@ -488,4 +488,92 @@ test('parser kimi e agy: testo con tool_calls, step tool_call e result.response'
 	assert.equal(CLI_AGENTS.agy.parseOutput(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: ' solo risultato ' } })), 'solo risultato');
 	// codex con righe CRLF (Windows).
 	assert.equal(CLI_AGENTS.codex.parseOutput('{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"ok"}}\r\n{"type":"turn.completed","usage":{}}\r\n'), 'ok');
+});
+
+// Installazioni finte: <radice>/<prefisso>/node_modules/<nome> con package.json e il file del comando, e il collegamento nel
+// PATH come lo crea npm su Linux e macOS (su Windows si usa il percorso a cui arriva resolveCliCommand).
+async function installLayout(root, name, version, bin, content = 'binario finto') {
+	const dir = join(root, 'lib', 'node_modules', ...name.split('/'));
+	const file = join(dir, ...bin.split('/'));
+	await mkdir(dirname(file), { recursive: true });
+	if (version !== undefined) await writeFile(join(dir, 'package.json'), typeof version === 'string' ? JSON.stringify({ name, version }) : version.raw);
+	await writeFile(file, content);
+	if (process.platform === 'win32') return file;
+	const link = join(root, 'bin', basename(bin).replace(/\.exe$/, ''));
+	await mkdir(dirname(link), { recursive: true });
+	await symlink(relative(dirname(link), file), link);
+	return link;
+}
+
+test('versione di OpenCode e Kimi dai file installati, senza avviare la CLI', async () => {
+	const root = await mkdtemp(join(tmpdir(), 'vox-cli-variant-'));
+	const detect = (agent, command, args = []) => detectCliVariant(agent, { command, args });
+	try {
+		assert.equal(await detect('opencode', await installLayout(join(root, 'v1'), 'opencode-ai', '1.19.6', 'bin/opencode.exe')), undefined);
+		assert.equal(await detect('opencode', await installLayout(join(root, 'v2'), '@opencode/cli', '2.4.1', 'bin/opencode.exe')), 'opencode2');
+		assert.equal(await detect('opencode', await installLayout(join(root, 'beta'), '@opencode/cli', '0.0.0-beta-19507', 'bin/opencode.exe')), 'opencode2');
+		assert.equal(await detect('opencode', await installLayout(join(root, 'nuovo'), 'opencode-ai', '2.0.0', 'bin/opencode.exe')), 'opencode2');
+		// package.json illeggibile, di un altro pacchetto o assente (Homebrew, script di installazione): flag di opencode-ai 1.x
+		assert.equal(await detect('opencode', await installLayout(join(root, 'rotto'), '@opencode/cli', { raw: '{"name": "@opencode/cli", ' }, 'bin/opencode.exe')), undefined);
+		assert.equal(await detect('opencode', await installLayout(join(root, 'altro'), 'opencode-fork', '9.0.0', 'bin/opencode.exe')), undefined);
+		assert.equal(await detect('opencode', await installLayout(join(root, 'brew'), 'senza-pacchetto', undefined, 'bin/opencode.exe')), undefined);
+		assert.equal(await detect('opencode', join(root, 'inesistente', 'opencode.exe')), undefined);
+		// le altre IA non si controllano
+		assert.equal(await detect('codex', await installLayout(join(root, 'codex'), '@opencode/cli', '2.4.1', 'bin/codex.exe')), undefined);
+
+		// Kimi Code (npm): lo script del pacchetto può citare kimi_cli (migrazione dei dati) senza essere la versione Python.
+		// Su Windows resolveCliCommand avvia node con lo script come primo argomento.
+		const kimiCode = await installLayout(join(root, 'kimi-code'), '@moonshot-ai/kimi-code', '2.7.3', 'dist/main.mjs', '#!/usr/bin/env node\n// importa i dati di kimi_cli\n');
+		assert.equal(await detect('kimi', kimiCode), undefined);
+		assert.equal(await detect('kimi', process.execPath, [kimiCode]), undefined);
+		// kimi-cli Python: script di uv/pip con shebang python e launcher .exe di pip/uv con lo script in coda
+		const uv = join(root, 'uv', 'tools', 'kimi-cli', 'bin', 'kimi');
+		await mkdir(dirname(uv), { recursive: true });
+		await writeFile(uv, `#!${join(dirname(uv), 'python')}\nimport sys\nfrom kimi_cli.__main__ import main\nsys.exit(main())\n`);
+		assert.equal(await detect('kimi', uv), 'kimiPython');
+		const launcher = join(root, 'Scripts', 'kimi.exe');
+		await mkdir(dirname(launcher), { recursive: true });
+		await writeFile(launcher, Buffer.concat([Buffer.from('MZ\x90\x00'), Buffer.alloc(2048), Buffer.from('PK\x03\x04__main__.pyimport re\nfrom kimi_cli.__main__ import main\n')]));
+		assert.equal(await detect('kimi', launcher), 'kimiPython');
+		if (process.platform !== 'win32') {
+			const link = join(root, 'local-bin', 'kimi');
+			await mkdir(dirname(link), { recursive: true });
+			await symlink(uv, link);
+			assert.equal(await detect('kimi', link), 'kimiPython');
+		}
+		// un eseguibile qualunque (per esempio Kimi Code installato con lo script, un binario Node SEA) non è la versione Python
+		assert.equal(await detect('kimi', process.execPath), undefined);
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Windows: lo shim npm di OpenCode 2.x porta all’.exe del pacchetto @opencode/cli', { skip: process.platform !== 'win32' }, async () => {
+	const root = await mkdtemp(join(tmpdir(), 'vox-cli-variant-'));
+	try {
+		const binary = join(root, 'node_modules', '@opencode', 'cli', 'bin', 'opencode.exe');
+		await mkdir(dirname(binary), { recursive: true });
+		await writeFile(join(root, 'node_modules', '@opencode', 'cli', 'package.json'), JSON.stringify({ name: '@opencode/cli', version: '2.4.1' }));
+		await writeFile(binary, 'binario finto');
+		const shim = join(root, 'opencode.cmd');
+		await writeFile(shim, '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe"   %*\r\n', 'utf8');
+		const executable = await resolveCliCommand(shim);
+		assert.deepEqual(executable, { command: binary, args: [] });
+		assert.equal(await detectCliVariant('opencode', executable), 'opencode2');
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('OpenCode 2.x finto: argomenti, PWD e cartella di lavoro arrivano alla CLI', { skip: process.platform === 'win32' || /\s/.test(process.execPath) }, async () => {
+	const root = await mkdtemp(join(tmpdir(), 'vox-cli-variant-'));
+	try {
+		// Il comando nel PATH punta all'«eseguibile» del pacchetto, qui uno script Node che risponde come `opencode run --format json`.
+		const command = await installLayout(root, '@opencode/cli', '2.4.1', 'bin/opencode.exe', `#!${process.execPath}\nimport(${JSON.stringify(pathToFileURL(fixture).href)});\n`);
+		await chmod(join(root, 'lib', 'node_modules', '@opencode', 'cli', 'bin', 'opencode.exe'), 0o755);
+		const answer = JSON.parse(await runCliAgent({ agent: 'opencode', prompt: 'ciao', cwd: folder, command, model: 'provider/modello', onText: () => {} }));
+		assert.deepEqual(answer.args.slice(0, 8), ['run', '--standalone', '--format', 'json', '--agent', 'vox', '-m', 'provider/modello']);
+		assert.ok(!answer.args.includes('--pure') && !answer.args.includes('--dir'));
+		assert.equal(answer.args.at(-2), '--');
+		assert.ok(answer.args.at(-1).endsWith('ciao'));
+		assert.equal(answer.pwd, folder);
+		assert.equal(answer.cwd, folder);
+		assert.equal(answer.config.agents.vox.permissions[0].effect, 'deny');
+	} finally { await rm(root, { recursive: true, force: true }); }
 });

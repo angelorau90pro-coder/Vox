@@ -706,7 +706,11 @@ export const it: Record<string, string> = {
 	// servizi del workbench (Ctrl+K, messaggio di commit)
 	"Vox: Quick Edit failed: {0}": "Vox: modifica rapida non riuscita: {0}",
 	"The model did not return a commit message.": "Il modello non ha restituito un messaggio di commit.",
-	"Failed to generate commit message: {0}": "Impossibile generare il messaggio di commit: {0}"
+	"Failed to generate commit message: {0}": "Impossibile generare il messaggio di commit: {0}",
+	// IA in CLI: versioni di OpenCode e Kimi
+	"The installed kimi command is the old Python Kimi CLI (kimi-cli), which is archived and not supported: Vox cannot limit its tools. Install Kimi Code (npm install -g @moonshot-ai/kimi-code) or set the path of its kimi command in Settings.": "Il comando kimi installato è la vecchia Kimi CLI in Python (kimi-cli), archiviata e non supportata: Vox non può limitarne gli strumenti. Installare Kimi Code (npm install -g @moonshot-ai/kimi-code) oppure indicare nelle Impostazioni il percorso del suo comando kimi.",
+	"Vox could not recognize the installed OpenCode version and used the options of opencode-ai 1.x: if you have OpenCode 2.x, install it with npm (@opencode/cli) or set the path of the command installed by npm in Settings.": "Vox non ha riconosciuto la versione di OpenCode installata e ha usato le opzioni di opencode-ai 1.x: con OpenCode 2.x, installarlo con npm (@opencode/cli) oppure indicare nelle Impostazioni il percorso del comando installato da npm.",
+	"The installed {0} may not support the options used by Vox: check its version in the CLI AI documentation.": "La versione installata di {0} potrebbe non supportare le opzioni usate da Vox: verificarla nella documentazione delle IA in CLI."
 };
 
 export function t(english: string, ...parameters: unknown[]): string {
